@@ -14,7 +14,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.enums import ButtonStyle
 
-BOT_TOKEN = "9020652959:AAHtsBeIx8Nbef22L9pHCh7YodWLEwPiwZw"
+BOT_TOKEN = "9020652959:AAHASViYYeKXFUuk7h3FJjmE5K6Sf1grcso"
 ADMIN_ID = 8907438590
 
 bot = Bot(BOT_TOKEN)
