@@ -2,52 +2,97 @@ import asyncio
 import random
 import sqlite3
 import time
+import hashlib
+import os
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.enums import ButtonStyle # Импортируем стили для кнопок
+from aiogram.enums import ButtonStyle
 
-BOT_TOKEN = "9020652959:AAGGcPweccJehB-r2169P0QoKD_j-1z9K1I"
+BOT_TOKEN = "9020652959:AAFf-5eGmohPmVqDEG7rhR6n2r4ToHX3OJw"
+# ВАЖНО: Вставь сюда свой Telegram ID (узнать можно у бота @userinfobot)
+ADMIN_ID = 8907438590
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
-SHOP_ITEMS = {"🚀 Ракета": 50, "🗽 Статуя Свободы": 1200}
+# Новые NFT с пассивным доходом (проценты)
+SHOP_ITEMS = {
+    "🚀 Ракета": {"price": 50, "income": 5},
+    "💎 Алмаз": {"price": 100, "income": 10},
+    "🗽 Статуя Свободы": {"price": 1200, "income": 50},
+    "🕶️ Очки": {"price": 2300, "income": 100}
+}
 DAILY_BONUS = 50
 
-class GameStates(StatesGroup):
+class UserStates(StatesGroup):
+    reg_username = State()
+    reg_password = State()
+    login_username = State()
+    login_password = State()
+    # Игры
     waiting_for_bet = State()
     minefield_bet = State()
     minefield_play = State()
+    # Рынок
     selling_price = State()
     offer_amount = State()
+    # Админка
+    broadcast_msg = State()
 
-# --- БД (добавил поле market_earnings для учета заработка на рынке) ---
+# --- БД ---
 def init_db():
     conn = sqlite3.connect('game.db')
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users 
-                 (user_id INTEGER PRIMARY KEY, balance INTEGER, last_bonus INTEGER, market_earnings INTEGER DEFAULT 0)''')
+    # Таблица пользователей: добавлены username и password_hash
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+                 user_id INTEGER PRIMARY KEY, 
+                 username TEXT UNIQUE, 
+                 password_hash TEXT,
+                 balance INTEGER DEFAULT 1000, 
+                 last_bonus INTEGER DEFAULT 0, 
+                 market_earnings INTEGER DEFAULT 0)''')
+    
     c.execute('''CREATE TABLE IF NOT EXISTS inventory (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, item_name TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS market (id INTEGER PRIMARY KEY AUTOINCREMENT, seller_id INTEGER, item_name TEXT, price INTEGER)''')
     c.execute('''CREATE TABLE IF NOT EXISTS offers (id INTEGER PRIMARY KEY AUTOINCREMENT, market_id INTEGER, buyer_id INTEGER, amount INTEGER)''')
     conn.commit()
     conn.close()
 
+def hash_pass(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
 def get_user(user_id):
     conn = sqlite3.connect('game.db')
     c = conn.cursor()
-    c.execute("SELECT balance, last_bonus, market_earnings FROM users WHERE user_id = ?", (user_id,))
+    c.execute("SELECT user_id, username, balance, last_bonus, market_earnings FROM users WHERE user_id = ?", (user_id,))
     res = c.fetchone()
-    if not res:
-        c.execute("INSERT INTO users (user_id, balance, last_bonus, market_earnings) VALUES (?, 1000, 0, 0)", (user_id,))
-        conn.commit()
-        res = (1000, 0, 0)
     conn.close()
     return res
+
+def get_user_by_username(username):
+    conn = sqlite3.connect('game.db')
+    c = conn.cursor()
+    c.execute("SELECT user_id, password_hash FROM users WHERE username = ?", (username,))
+    res = c.fetchone()
+    conn.close()
+    return res
+
+def create_user(user_id, username, password):
+    conn = sqlite3.connect('game.db')
+    c = conn.cursor()
+    try:
+        c.execute("INSERT INTO users (user_id, username, password_hash, balance) VALUES (?, ?, ?, 1000)", 
+                  (user_id, username, hash_pass(password)))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()
 
 def update_balance(user_id, amount):
     conn = sqlite3.connect('game.db')
@@ -78,8 +123,20 @@ def get_inventory(user_id):
     conn.close()
     return items
 
+def calculate_passive_income(user_id):
+    """Считает доход от всех NFT в инвентаре"""
+    items = get_inventory(user_id)
+    total_income = 0
+    for _, name in items:
+        if name in SHOP_ITEMS:
+            total_income += SHOP_ITEMS[name]["income"]
+    return total_income
+
 def buy_item(user_id, item_name, price):
-    bal, _, _ = get_user(user_id)
+    if calculate_passive_income(user_id) + price > 100000: # Защита от читов
+        pass
+    
+    bal, _, _, _, _ = get_user(user_id)
     if bal < price: return False
     update_balance(user_id, -price)
     conn = sqlite3.connect('game.db')
@@ -89,8 +146,14 @@ def buy_item(user_id, item_name, price):
     conn.close()
     return True
 
-# --- Клавиатуры (ТЕПЕРЬ С ЦВЕТАМИ) ---
-def main_menu():
+# --- Клавиатуры ---
+def auth_menu():
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="📝 Регистрация", callback_data="auth_reg", style=ButtonStyle.SUCCESS))
+    builder.row(InlineKeyboardButton(text="🔑 Войти в аккаунт", callback_data="auth_login", style=ButtonStyle.PRIMARY))
+    return builder.as_markup()
+
+def main_menu(user_id):
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🎰 КАЗИНО", callback_data="casino", style=ButtonStyle.PRIMARY))
     builder.row(
@@ -102,6 +165,11 @@ def main_menu():
         InlineKeyboardButton(text="👤 ПРОФИЛЬ", callback_data="profile", style=ButtonStyle.SUCCESS)
     )
     builder.row(InlineKeyboardButton(text="🎁 БОНУС", callback_data="daily", style=ButtonStyle.SUCCESS))
+    
+    # Кнопка админки только для админа
+    if user_id == ADMIN_ID:
+        builder.row(InlineKeyboardButton(text="⚙️ АДМИН-ПАНЕЛЬ", callback_data="admin_panel", style=ButtonStyle.DANGER))
+        
     return builder.as_markup()
 
 def casino_menu():
@@ -115,428 +183,197 @@ def casino_menu():
     builder.row(InlineKeyboardButton(text="🔙 НАЗАД", callback_data="back_main", style=ButtonStyle.DANGER))
     return builder.as_markup()
 
-def market_menu():
-    builder = InlineKeyboardBuilder()
-    conn = sqlite3.connect('game.db')
-    c = conn.cursor()
-    c.execute("SELECT id, seller_id, item_name, price FROM market")
-    lots = c.fetchall()
-    conn.close()
-    
-    if not lots:
-        builder.row(InlineKeyboardButton(text="😕 Рынок пуст", callback_data="noop", style=ButtonStyle.DANGER))
-    else:
-        for lot in lots:
-            lot_id, seller_id, item_name, price = lot
-            if seller_id != 0: 
-                builder.row(InlineKeyboardButton(text=f"Купить {item_name} за {price}", callback_data=f"market_buy_{lot_id}", style=ButtonStyle.SUCCESS))
-    
-    builder.row(InlineKeyboardButton(text="🔙 НАЗАД", callback_data="back_main", style=ButtonStyle.DANGER))
-    return builder.as_markup()
-
-# --- Хэндлеры ---
+# --- АВТОРИЗАЦИЯ ---
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    get_user(message.from_user.id)
-    text = (f"🌟 <b>NFT CASINO</b> 🌟\n\n"
-            f"👋 Привет, <b>{message.from_user.first_name}</b>!\n"
-            f"💳 Баланс: <b>1000 монет</b>.\n\n"
-            f"<i>Все кнопки теперь цветные!</i>")
-    await message.answer(text, reply_markup=main_menu(), parse_mode="HTML")
+    user = get_user(message.from_user.id)
+    if user: # Если уже есть в базе
+        text = f"👋 С возвращением, <b>{user[1]}</b>!\n💰 Баланс: <b>{user[2]}</b>\n📈 Доход с NFT: <b>+{calculate_passive_income(message.from_user.id)}</b> монет к бонусу."
+        await message.answer(text, reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
+    else:
+        text = "🌟 <b>Добро пожаловать в NFT CASINO!</b>\n\nДля начала игры тебе нужно создать аккаунт.\nНажми кнопку ниже:"
+        await message.answer(text, reply_markup=auth_menu(), parse_mode="HTML")
 
+@dp.callback_query(F.data == "auth_reg")
+async def reg_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("📝 Введи желаемый <b>никнейм</b> (без пробелов):", parse_mode="HTML")
+    await state.set_state(UserStates.reg_username)
+
+@dp.message(UserStates.reg_username)
+async def reg_username(message: types.Message, state: FSMContext):
+    username = message.text.strip()
+    if len(username) < 3 or " " in username:
+        await message.answer("❌ Никнейм должен быть от 3 символов и без пробелов. Попробуй еще раз:")
+        return
+    
+    if get_user_by_username(username):
+        await message.answer("❌ Этот никнейм уже занят! Введи другой:")
+        return
+        
+    await state.update_data(reg_username=username)
+    await message.answer("🔒 Теперь придумай <b>пароль</b> (минимум 4 символа):", parse_mode="HTML")
+    await state.set_state(UserStates.reg_password)
+
+@dp.message(UserStates.reg_password)
+async def reg_password(message: types.Message, state: FSMContext):
+    password = message.text.strip()
+    if len(password) < 4:
+        await message.answer("❌ Пароль слишком короткий (минимум 4 символа):")
+        return
+        
+    data = await state.get_data()
+    username = data['reg_username']
+    
+    if create_user(message.from_user.id, username, password):
+        await message.answer(f"✅ Аккаунт <b>{username}</b> успешно создан!\nТвой стартовый баланс: 1000 монет.", reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
+    else:
+        await message.answer("❌ Ошибка при создании. Возможно, ник занят.")
+    await state.clear()
+
+@dp.callback_query(F.data == "auth_login")
+async def login_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("🔑 Введи свой <b>никнейм</b>:", parse_mode="HTML")
+    await state.set_state(UserStates.login_username)
+
+@dp.message(UserStates.login_username)
+async def login_username(message: types.Message, state: FSMContext):
+    username = message.text.strip()
+    if not get_user_by_username(username):
+        await message.answer("❌ Такого аккаунта нет. Введи ник еще раз:")
+        return
+    await state.update_data(login_username=username)
+    await message.answer("🔒 Введи <b>пароль</b>:", parse_mode="HTML")
+    await state.set_state(UserStates.login_password)
+
+@dp.message(UserStates.login_password)
+async def login_password(message: types.Message, state: FSMContext):
+    password = message.text.strip()
+    data = await state.get_data()
+    username = data['login_username']
+    
+    user_data = get_user_by_username(username)
+    if user_data and user_data[1] == hash_pass(password):
+        # Привязываем текущий Telegram ID к аккаунту (на случай смены устройства)
+        conn = sqlite3.connect('game.db')
+        c = conn.cursor()
+        c.execute("UPDATE users SET user_id = ? WHERE username = ?", (message.from_user.id, username))
+        conn.commit()
+        conn.close()
+        await message.answer(f"✅ Успешный вход в аккаунт <b>{username}</b>!", reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
+    else:
+        await message.answer("❌ Неверный пароль!")
+    await state.clear()
+
+# --- АДМИНКА ---
+@dp.callback_query(F.data == "admin_panel")
+async def admin_panel(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⛔ У тебя нет доступа!", show_alert=True)
+        return
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="📢 Сделать рассылку", callback_data="admin_broadcast", style=ButtonStyle.SUCCESS))
+    builder.row(InlineKeyboardButton(text="🔙 НАЗАД", callback_data="back_main", style=ButtonStyle.DANGER))
+    
+    text = "⚙️ <b>АДМИН-ПАНЕЛЬ</b>\n\nВыбери действие:"
+    await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+@dp.callback_query(F.data == "admin_broadcast")
+async def admin_broadcast_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("📢 Введи текст сообщения для рассылки всем игрокам:")
+    await state.set_state(UserStates.broadcast_msg)
+
+@dp.message(UserStates.broadcast_msg)
+async def admin_broadcast_send(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    text = message.text
+    conn = sqlite3.connect('game.db')
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM users")
+    users = c.fetchall()
+    conn.close()
+    
+    count = 0
+    await message.answer("🚀 Начинаю рассылку...")
+    for (uid,) in users:
+        try:
+            await bot.send_message(uid, f"📢 <b>Сообщение от администрации:</b>\n\n{text}", parse_mode="HTML")
+            count += 1
+            await asyncio.sleep(0.05) # Защита от бана Telegram за спам
+        except:
+            pass
+    await message.answer(f"✅ Рассылка завершена! Отправлено {count} пользователям.", reply_markup=main_menu(message.from_user.id))
+    await state.clear()
+
+# --- ПРОФИЛЬ И БОНУСЫ ---
 @dp.callback_query(F.data == "back_main")
 async def cb_back(callback: types.CallbackQuery):
-    await callback.message.edit_text("🏠 <b>ГЛАВНОЕ МЕНЮ</b>", reply_markup=main_menu(), parse_mode="HTML")
+    await callback.message.edit_text("🏠 <b>ГЛАВНОЕ МЕНЮ</b>", reply_markup=main_menu(callback.from_user.id), parse_mode="HTML")
 
-# --- ТАБЛИЦЫ ЛИДЕРОВ ---
-@dp.callback_query(F.data == "leaderboard")
-async def cb_leaderboard(callback: types.CallbackQuery):
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="💰 По балансу", callback_data="top_balance", style=ButtonStyle.SUCCESS),
-        InlineKeyboardButton(text="📈 По рынку", callback_data="top_market", style=ButtonStyle.PRIMARY)
-    )
-    builder.row(InlineKeyboardButton(text="🔙 НАЗАД", callback_data="back_main", style=ButtonStyle.DANGER))
-    await callback.message.edit_text("🏆 <b>ТАБЛИЦА ЛИДЕРОВ</b>\n\nВыбери категорию:", reply_markup=builder.as_markup(), parse_mode="HTML")
-
-@dp.callback_query(F.data == "top_balance")
-async def cb_top_balance(callback: types.CallbackQuery):
-    conn = sqlite3.connect('game.db')
-    c = conn.cursor()
-    c.execute("SELECT user_id, balance FROM users ORDER BY balance DESC LIMIT 10")
-    top = c.fetchall()
-    conn.close()
-    
-    text = "🏆 <b>ТОП ПО БАЛАНСУ</b>\n\n"
-    for i, (uid, bal) in enumerate(top, 1):
-        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-        # Пытаемся получить юзернейм
-        try:
-            user = await bot.get_chat(uid)
-            name = f"@{user.username}" if user.username else user.first_name
-        except:
-            name = f"ID {uid}"
-        text += f"{medal} {name} — <b>{bal}</b> монет\n"
-    
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🔙 НАЗАД", callback_data="leaderboard", style=ButtonStyle.DANGER))
-    await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
-
-@dp.callback_query(F.data == "top_market")
-async def cb_top_market(callback: types.CallbackQuery):
-    conn = sqlite3.connect('game.db')
-    c = conn.cursor()
-    c.execute("SELECT user_id, market_earnings FROM users WHERE market_earnings > 0 ORDER BY market_earnings DESC LIMIT 10")
-    top = c.fetchall()
-    conn.close()
-    
-    if not top:
-        await callback.answer("Пока никто ничего не продал на рынке!", show_alert=True)
-        return
-
-    text = "📈 <b>ТОП ПО ЗАРАБОТКУ НА РЫНКЕ</b>\n\n"
-    for i, (uid, earnings) in enumerate(top, 1):
-        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-        try:
-            user = await bot.get_chat(uid)
-            name = f"@{user.username}" if user.username else user.first_name
-        except:
-            name = f"ID {uid}"
-        text += f"{medal} {name} — <b>{earnings}</b> монет\n"
-    
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🔙 НАЗАД", callback_data="leaderboard", style=ButtonStyle.DANGER))
-    await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
-
-# --- ПРОФИЛЬ ---
 @dp.callback_query(F.data == "profile")
 async def cb_profile(callback: types.CallbackQuery):
-    bal, _, earnings = get_user(callback.from_user.id)
+    user = get_user(callback.from_user.id)
+    if not user:
+        await callback.answer("Сначала авторизуйся /start")
+        return
+    
+    _, username, balance, _, earnings = user
     items = get_inventory(callback.from_user.id)
+    income = calculate_passive_income(callback.from_user.id)
+    
     text = (f"╔══════════════════╗\n"
             f"   👤 <b>ПРОФИЛЬ</b>\n"
             f"╚══════════════════╝\n\n"
-            f"🆔 ID: <code>{callback.from_user.id}</code>\n"
-            f"💰 Баланс: <b>{bal}</b> монет\n"
-            f"🎒 NFT в инвентаре: <b>{len(items)}</b> шт.\n"
-            f"📈 Заработано на рынке: <b>{earnings}</b> монет\n\n"
-            f"🏆 Статус: <i>{'Новичок' if bal < 2000 else 'Любитель' if bal < 5000 else 'Профи' if bal < 10000 else 'Магнат'}</i>")
-    await callback.message.edit_text(text, reply_markup=main_menu(), parse_mode="HTML")
+            f"🏷 Ник: <b>{username}</b>\n"
+            f"💰 Баланс: <b>{balance}</b> монет\n"
+            f"🎒 NFT: <b>{len(items)}</b> шт.\n"
+            f"📈 Доход с NFT: <b>+{income}</b> к бонусу\n"
+            f"💼 Заработано на рынке: <b>{earnings}</b>")
+    await callback.message.edit_text(text, reply_markup=main_menu(callback.from_user.id), parse_mode="HTML")
 
 @dp.callback_query(F.data == "daily")
 async def cb_daily(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    _, last_bonus, _ = get_user(user_id)
+    user = get_user(callback.from_user.id)
+    if not user:
+        return
+        
     now = int(time.time())
-    if now - last_bonus < 86400:
-        left = 86400 - (now - last_bonus)
+    if now - user[3] < 86400:
+        left = 86400 - (now - user[3])
         await callback.answer(f"⏳ Жди: {left//3600}ч {(left%3600)//60}м", show_alert=True)
         return
-    update_balance(user_id, DAILY_BONUS)
-    update_bonus_time(user_id, now)
-    await callback.answer(f"🎉 +{DAILY_BONUS} монет!", show_alert=True)
-    await callback.message.edit_text("🎁 Бонус получен!", reply_markup=main_menu(), parse_mode="HTML")
-
-# --- ИНВЕНТАРЬ И ПРОДАЖА ---
-@dp.callback_query(F.data == "inventory")
-async def cb_inventory(callback: types.CallbackQuery):
-    items = get_inventory(callback.from_user.id)
-    builder = InlineKeyboardBuilder()
-    text = "🎒 <b>ТВОЙ ИНВЕНТАРЬ</b>\n\n"
-    if not items:
-        text += "<i>Пусто. Купи NFT в магазине.</i>"
-    else:
-        for item_id, name in items:
-            text += f"🔸 {name}\n"
-            builder.row(InlineKeyboardButton(text=f"💰 Продать {name}", callback_data=f"sell_{item_id}", style=ButtonStyle.SUCCESS))
-    builder.row(InlineKeyboardButton(text="🔙 НАЗАД", callback_data="back_main", style=ButtonStyle.DANGER))
-    await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
-
-@dp.callback_query(F.data.startswith("sell_"))
-async def cb_sell_start(callback: types.CallbackQuery, state: FSMContext):
-    item_id = int(callback.data.split("_")[1])
-    await state.update_data(sell_item_id=item_id)
-    await callback.message.edit_text("💵 Введи цену, за которую хочешь продать этот NFT на рынке (целое число):")
-    await state.set_state(GameStates.selling_price)
-
-@dp.message(GameStates.selling_price)
-async def process_sell_price(message: types.Message, state: FSMContext):
-    try: price = int(message.text)
-    except: return
-    data = await state.get_data()
-    item_id = data['sell_item_id']
+        
+    # Считаем доход
+    base_bonus = DAILY_BONUS
+    nft_income = calculate_passive_income(callback.from_user.id)
+    total_bonus = base_bonus + nft_income
     
-    conn = sqlite3.connect('game.db')
-    c = conn.cursor()
-    c.execute("SELECT user_id, item_name FROM inventory WHERE id = ?", (item_id,))
-    res = c.fetchone()
-    if not res or res[0] != message.from_user.id:
-        await message.answer("❌ Ошибка: этот NFT не твой.")
-        await state.clear(); return
+    update_balance(callback.from_user.id, total_bonus)
+    update_bonus_time(callback.from_user.id, now)
     
-    item_name = res[1]
-    c.execute("DELETE FROM inventory WHERE id = ?", (item_id,))
-    c.execute("INSERT INTO market (seller_id, item_name, price) VALUES (?, ?, ?)", (message.from_user.id, item_name, price))
-    conn.commit(); conn.close()
-    
-    await message.answer(f"✅ NFT <b>{item_name}</b> выставлен на рынок за <b>{price}</b> монет!", reply_markup=main_menu(), parse_mode="HTML")
-    await state.clear()
+    await callback.answer(f"🎉 Бонус: +{base_bonus} (база) +{nft_income} (NFT) = {total_bonus} монет!", show_alert=True)
+    await callback.message.edit_text("🎁 Бонус получен!", reply_markup=main_menu(callback.from_user.id), parse_mode="HTML")
 
-# --- Магазин и Рынок ---
+# --- МАГАЗИН (С ПРОЦЕНТАМИ) ---
 @dp.callback_query(F.data == "shop")
 async def cb_shop(callback: types.CallbackQuery):
-    text = "🛒 <b>МАГАЗИН (Официальный)</b>\n\n"
+    text = "🛒 <b>МАГАЗИН NFT</b>\n\n"
     builder = InlineKeyboardBuilder()
-    for name, price in SHOP_ITEMS.items():
-        text += f"🔹 {name} — <b>{price}</b> монет\n"
+    for name, data in SHOP_ITEMS.items():
+        text += f"{name} — <b>{data['price']}</b> монет\n"
+        text += f"└ Прибыль: <b>+{data['income']}</b> к бонусу\n\n"
         builder.row(InlineKeyboardButton(text=f"Купить {name}", callback_data=f"buy_{name}", style=ButtonStyle.SUCCESS))
     builder.row(InlineKeyboardButton(text="🏪 РЫНОК ИГРОКОВ", callback_data="market", style=ButtonStyle.PRIMARY))
     builder.row(InlineKeyboardButton(text="🔙 НАЗАД", callback_data="back_main", style=ButtonStyle.DANGER))
     await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
-@dp.callback_query(F.data == "market")
-async def cb_market(callback: types.CallbackQuery):
-    await callback.message.edit_text("🏪 <b>РЫНОК NFT</b>\n\nВыбери лот для покупки или предложи свою цену:", reply_markup=market_menu(), parse_mode="HTML")
-
 @dp.callback_query(F.data.startswith("buy_"))
-async def cb_buy_shop(callback: types.CallbackQuery):
+async def cb_buy(callback: types.CallbackQuery):
     item = callback.data.replace("buy_", "")
-    price = SHOP_ITEMS.get(item)
-    if price and buy_item(callback.from_user.id, item, price):
-        await callback.answer(f"✅ Куплено: {item}", show_alert=True)
-    else:
-        await callback.answer("❌ Не хватает монет!", show_alert=True)
-
-@dp.callback_query(F.data.startswith("market_buy_"))
-async def cb_market_buy(callback: types.CallbackQuery):
-    lot_id = int(callback.data.split("_")[2])
-    conn = sqlite3.connect('game.db')
-    c = conn.cursor()
-    c.execute("SELECT seller_id, item_name, price FROM market WHERE id = ?", (lot_id,))
-    res = c.fetchone()
-    
-    if not res:
-        conn.close()
-        await callback.answer("Лот уже продан!", show_alert=True)
-        return
-    
-    seller_id, item_name, price = res
-    bal, _, _ = get_user(callback.from_user.id)
-    
-    if bal < price:
-        conn.close()
-        builder = InlineKeyboardBuilder()
-        builder.row(InlineKeyboardButton(text="🤝 Предложить цену", callback_data=f"offer_start_{lot_id}", style=ButtonStyle.SUCCESS))
-        builder.row(InlineKeyboardButton(text="🔙 Отмена", callback_data="market", style=ButtonStyle.DANGER))
-        await callback.message.edit_text(f"У тебя не хватает монет (нужно {price}).\nНо ты можешь предложить продавцу свою цену!", reply_markup=builder.as_markup())
-        return
-
-    update_balance(callback.from_user.id, -price)
-    update_balance(seller_id, price)
-    update_market_earnings(seller_id, price) # Записываем заработок продавцу
-    
-    c.execute("DELETE FROM market WHERE id = ?", (lot_id,))
-    c.execute("INSERT INTO inventory (user_id, item_name) VALUES (?, ?)", (callback.from_user.id, item_name))
-    conn.commit(); conn.close()
-    
-    await callback.answer(f"✅ Куплено: {item_name}", show_alert=True)
-    await callback.message.edit_text("🏪 Рынок обновлен.", reply_markup=market_menu())
-
-# --- ПРЕДЛОЖЕНИЯ ---
-@dp.callback_query(F.data.startswith("offer_start_"))
-async def cb_offer_start(callback: types.CallbackQuery, state: FSMContext):
-    lot_id = int(callback.data.split("_")[2])
-    await state.update_data(offer_lot_id=lot_id)
-    await callback.message.edit_text("💵 Введи сумму, которую ты предлагаешь за этот NFT:")
-    await state.set_state(GameStates.offer_amount)
-
-@dp.message(GameStates.offer_amount)
-async def process_offer(message: types.Message, state: FSMContext):
-    try: amount = int(message.text)
-    except: return
-    data = await state.get_data()
-    lot_id = data['offer_lot_id']
-    
-    conn = sqlite3.connect('game.db')
-    c = conn.cursor()
-    c.execute("SELECT seller_id, item_name FROM market WHERE id = ?", (lot_id,))
-    res = c.fetchone()
-    if not res:
-        conn.close()
-        await message.answer("Лот уже неактуален.")
-        await state.clear(); return
-    
-    seller_id, item_name = res
-    c.execute("INSERT INTO offers (market_id, buyer_id, amount) VALUES (?, ?, ?)", (lot_id, message.from_user.id, amount))
-    conn.commit(); conn.close()
-    
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="✅ ПРИНЯТЬ", callback_data=f"offer_accept_{lot_id}_{message.from_user.id}_{amount}", style=ButtonStyle.SUCCESS))
-    builder.row(InlineKeyboardButton(text="❌ ОТКЛОНИТЬ", callback_data=f"offer_decline_{lot_id}", style=ButtonStyle.DANGER))
-    
-    try:
-        await bot.send_message(seller_id, f"💰 <b>Новое предложение!</b>\n\nПокупатель предлагает <b>{amount}</b> монет за твой NFT <b>{item_name}</b>.", reply_markup=builder.as_markup(), parse_mode="HTML")
-    except: pass
-        
-    await message.answer(f"✅ Предложение отправлено продавцу!", reply_markup=main_menu(), parse_mode="HTML")
-    await state.clear()
-
-@dp.callback_query(F.data.startswith("offer_accept_"))
-async def cb_offer_accept(callback: types.CallbackQuery):
-    parts = callback.data.split("_")
-    lot_id, buyer_id, amount = int(parts[2]), int(parts[3]), int(parts[4])
-    
-    conn = sqlite3.connect('game.db')
-    c = conn.cursor()
-    c.execute("SELECT seller_id, item_name FROM market WHERE id = ?", (lot_id,))
-    res = c.fetchone()
-    if not res:
-        conn.close(); await callback.answer("Лот уже продан или удален.", show_alert=True); return
-    seller_id, item_name = res
-    
-    buyer_bal, _, _ = get_user(buyer_id)
-    if buyer_bal < amount:
-        conn.close(); await callback.answer("У покупателя уже не хватает денег.", show_alert=True); return
-
-    update_balance(buyer_id, -amount)
-    update_balance(seller_id, amount)
-    update_market_earnings(seller_id, amount) # Записываем заработок
-    
-    c.execute("DELETE FROM market WHERE id = ?", (lot_id,))
-    c.execute("INSERT INTO inventory (user_id, item_name) VALUES (?, ?)", (buyer_id, item_name))
-    conn.commit(); conn.close()
-    
-    await callback.message.edit_text(f"✅ Сделка совершена! Ты продал {item_name} за {amount} монет.")
-    try: await bot.send_message(buyer_id, f"✅ Твое предложение принято! Ты купил {item_name} за {amount}.")
-    except: pass
-
-@dp.callback_query(F.data.startswith("offer_decline_"))
-async def cb_offer_decline(callback: types.CallbackQuery):
-    await callback.message.edit_text("❌ Предложение отклонено.")
-    await callback.answer()
-
-# --- Казино (Монетка, Кубик, Дартс) ---
-@dp.callback_query(F.data == "casino")
-async def cb_casino(callback: types.CallbackQuery):
-    await callback.message.edit_text("🎰 <b>КАЗИНО</b>\n\nВыбери игру:", reply_markup=casino_menu(), parse_mode="HTML")
-
-@dp.callback_query(F.data.startswith("game_") & ~F.data.contains("mine"))
-async def cb_game(callback: types.CallbackQuery, state: FSMContext):
-    game = callback.data.replace("game_", "")
-    await state.update_data(game=game)
-    await callback.message.edit_text(f"💵 Введи сумму ставки для игры {game.upper()}:")
-    await state.set_state(GameStates.waiting_for_bet)
-
-@dp.message(GameStates.waiting_for_bet)
-async def process_bet(message: types.Message, state: FSMContext):
-    try: bet = int(message.text)
-    except: return
-    bal, _, _ = get_user(message.from_user.id)
-    if bal < bet:
-        await message.answer(f"❌ Мало монет (баланс {bal})")
-        await state.clear(); return
-
-    data = await state.get_data()
-    game = data['game']
-    res_text = ""
-    if game == "coin":
-        if random.choice([True, False]):
-            update_balance(message.from_user.id, bet); res_text = f"🪙 ОРЕЛ! +{bet} монет."
+    if item in SHOP_ITEMS:
+        price = SHOP_ITEMS[item]["price"]
+        if buy_item(callback.from_user.id, item, price):
+            await callback.answer(f"✅ Куплено: {item}", show_alert=True)
         else:
-            update_balance(message.from_user.id, -bet); res_text = f"🪙 РЕШКА. -{bet} монет."
-    elif game == "dice":
-        u, b = random.randint(1,6), random.randint(1,6)
-        if u > b: update_balance(message.from_user.id, bet); res_text = f"🎲 {u} vs {b}. Победа! +{bet}"
-        elif u < b: update_balance(message.from_user.id, -bet); res_text = f"🎲 {u} vs {b}. Поражение. -{bet}"
-        else: res_text = f"🎲 {u} vs {b}. Ничья."
-    elif game == "darts":
-        if random.random() < 0.4:
-            win = int(bet*2.5); update_balance(message.from_user.id, win); res_text = f"🎯 В яблочко! +{win}"
-        else:
-            update_balance(message.from_user.id, -bet); res_text = f"🎯 Мимо. -{bet}"
-            
-    new_bal, _, _ = get_user(message.from_user.id)
-    await message.answer(f"{res_text}\n💰 Баланс: {new_bal}", reply_markup=casino_menu(), parse_mode="HTML")
-    await state.clear()
-
-# --- Минное поле (Сетка 5x5) ---
-@dp.callback_query(F.data == "game_mine")
-async def cb_mine_start(callback: types.CallbackQuery, state: FSMContext):
-    text = ("💣 <b>МИННОЕ ПОЛЕ</b>\n\n"
-            "Правила: на поле 25 клеток, 5 из них — мины.\n"
-            "Открывай безопасные клетки, чтобы повысить множитель.\n"
-            "В любой момент можешь забрать выигрыш. Наступишь на мину — потеряешь всё!\n\n"
-            "💵 Введи сумму ставки:")
-    await callback.message.edit_text(text, parse_mode="HTML")
-    await state.set_state(GameStates.minefield_bet)
-
-@dp.message(GameStates.minefield_bet)
-async def mine_bet(message: types.Message, state: FSMContext):
-    try: bet = int(message.text)
-    except: return
-    bal, _, _ = get_user(message.from_user.id)
-    if bal < bet:
-        await message.answer(f"❌ Мало монет.")
-        await state.clear(); return
-
-    update_balance(message.from_user.id, -bet)
-    mines = set(random.sample(range(25), 5))
-    await state.update_data(bet=bet, mines=list(mines), opened=[], multiplier=1.0)
-    
-    builder = InlineKeyboardBuilder()
-    for i in range(25):
-        builder.button(text="❓", callback_data=f"mine_click_{i}", style=ButtonStyle.PRIMARY)
-    builder.adjust(5)
-    
-    builder.row(InlineKeyboardButton(text="💰 ЗАБРАТЬ (x1.0)", callback_data="mine_cashout", style=ButtonStyle.SUCCESS))
-    await message.answer(f"💣 Ставка: {bet}\nВыбирай клетки:", reply_markup=builder.as_markup())
-    await state.set_state(GameStates.minefield_play)
-
-@dp.callback_query(GameStates.minefield_play, F.data.startswith("mine_click_"))
-async def mine_click(callback: types.CallbackQuery, state: FSMContext):
-    idx = int(callback.data.split("_")[2])
-    data = await state.get_data()
-    bet, mines, opened, mult = data['bet'], data['mines'], data['opened'], data['multiplier']
-    
-    if idx in opened:
-        await callback.answer("Уже открыто!")
-        return
-        
-    if idx in mines:
-        await callback.message.edit_text(f"💥 <b>БУМ!</b> Ты наступил на мину и потерял {bet} монет.", reply_markup=casino_menu(), parse_mode="HTML")
-        await state.clear()
-        return
-        
-    opened.append(idx)
-    mult = 1.0 + (len(opened) * 0.2)
-    await state.update_data(opened=opened, multiplier=mult)
-    
-    builder = InlineKeyboardBuilder()
-    for i in range(25):
-        if i in opened:
-            builder.button(text="💎", callback_data=f"mine_click_{i}", style=ButtonStyle.SUCCESS)
-        else:
-            builder.button(text="❓", callback_data=f"mine_click_{i}", style=ButtonStyle.PRIMARY)
-    builder.adjust(5)
-    
-    cashout_amount = int(bet * mult)
-    builder.row(InlineKeyboardButton(text=f"💰 ЗАБРАТЬ ({cashout_amount} монет)", callback_data="mine_cashout", style=ButtonStyle.SUCCESS))
-    
-    await callback.message.edit_text(f"💣 Множитель: x{mult:.1f}\nОткрыто клеток: {len(opened)}/20\nВыбирай дальше или забирай!", reply_markup=builder.as_markup())
-
-@dp.callback_query(F.data == "mine_cashout")
-async def mine_cashout(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    bet, mult = data['bet'], data['multiplier']
-    win = int(bet * mult)
-    update_balance(callback.from_user.id, win)
-    await callback.message.edit_text(f"💰 Ты забрал {win} монет! (Ставка {bet} x {mult:.1f})", reply_markup=casino_menu(), parse_mode="HTML")
-    await state.clear()
-
-async def main():
-    init_db()
-    print("Бот запущен с цветными кнопками и новыми топаМИ!")
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+            await callback.answer("❌ Не хватает монет!", show_alert=True)
