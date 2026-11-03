@@ -9,8 +9,9 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.enums import ButtonStyle  # Импорт для цветных кнопок
 
-BOT_TOKEN = "9184406467:AAGqWDc0a0qeMODcwJH8WCF5kn7lZypBFnE"
+BOT_TOKEN = "9184406467:AAEkDKfcYKBor-UVNPALRaBV2BOQm0zj8e4"
 ADMIN_ID = 8907438590
 
 bot = Bot(BOT_TOKEN)
@@ -68,22 +69,31 @@ def calculate_passive_income(user_id):
             total += SHOP_ITEMS[name]["income"]
     return total
 
-# --- МЕНЮ ---
+# --- КЛАВИАТУРЫ ---
 def main_menu(user_id):
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🎰 КАЗИНО", callback_data="casino"))
+    builder.row(InlineKeyboardButton(text="🎰 КАЗИНО", callback_data="casino", style=ButtonStyle.PRIMARY))
     builder.row(
-        InlineKeyboardButton(text="🛒 МАГАЗИН", callback_data="shop"), 
-        InlineKeyboardButton(text="🎒 ИНВЕНТАРЬ", callback_data="inventory")
+        InlineKeyboardButton(text="🛒 МАГАЗИН", callback_data="shop", style=ButtonStyle.SUCCESS), 
+        InlineKeyboardButton(text="🎒 ИНВЕНТАРЬ", callback_data="inventory", style=ButtonStyle.SUCCESS)
     )
     builder.row(
-        InlineKeyboardButton(text="🏆 ТОП", callback_data="leaderboard"), 
-        InlineKeyboardButton(text="👤 ПРОФИЛЬ", callback_data="profile")
+        InlineKeyboardButton(text="🏆 ТОП", callback_data="leaderboard", style=ButtonStyle.SUCCESS), 
+        InlineKeyboardButton(text="👤 ПРОФИЛЬ", callback_data="profile", style=ButtonStyle.SUCCESS)
     )
-    builder.row(InlineKeyboardButton(text="🎁 БОНУС", callback_data="daily"))
+    builder.row(InlineKeyboardButton(text="🎁 БОНУС", callback_data="daily", style=ButtonStyle.SUCCESS))
     
     if user_id == ADMIN_ID:
-        builder.row(InlineKeyboardButton(text="⚙️ АДМИНКА", callback_data="admin_panel"))
+        builder.row(InlineKeyboardButton(text="⚙️ АДМИНКА", callback_data="admin_panel", style=ButtonStyle.DANGER))
+    return builder.as_markup()
+
+def casino_menu():
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🪙 МОНЕТКА", callback_data="game_coin", style=ButtonStyle.PRIMARY),
+        InlineKeyboardButton(text="🎲 КУБИК", callback_data="game_dice", style=ButtonStyle.PRIMARY)
+    )
+    builder.row(InlineKeyboardButton(text="🔙 НАЗАД", callback_data="back_main", style=ButtonStyle.DANGER))
     return builder.as_markup()
 
 # --- СТАРТ ---
@@ -102,8 +112,12 @@ async def cb_profile(callback: types.CallbackQuery):
     bal, _ = get_user(callback.from_user.id)
     items = get_inventory(callback.from_user.id)
     income = calculate_passive_income(callback.from_user.id)
+    
+    # Делаем профиль кликабельным
+    user_link = f"<a href='tg://user?id={callback.from_user.id}'>{callback.from_user.first_name}</a>"
+    
     text = (f"👤 <b>ПРОФИЛЬ</b>\n\n"
-            f"🆔 ID: {callback.from_user.id}\n"
+            f"🆔 Игрок: {user_link}\n"
             f"💰 Баланс: <b>{bal}</b> монет\n"
             f"🎒 NFT: <b>{len(items)}</b> шт.\n"
             f"📈 Доход с NFT: <b>+{income}</b> к бонусу")
@@ -134,8 +148,8 @@ async def cb_shop(callback: types.CallbackQuery):
     builder = InlineKeyboardBuilder()
     for name, data in SHOP_ITEMS.items():
         text += f"{name} — <b>{data['price']}</b>\n└ Доход: +{data['income']}\n\n"
-        builder.row(InlineKeyboardButton(text=f"Купить {name}", callback_data=f"buy_{name}"))
-    builder.row(InlineKeyboardButton(text="🔙 НАЗАД", callback_data="back_main"))
+        builder.row(InlineKeyboardButton(text=f"Купить {name}", callback_data=f"buy_{name}", style=ButtonStyle.SUCCESS))
+    builder.row(InlineKeyboardButton(text="🔙 НАЗАД", callback_data="back_main", style=ButtonStyle.DANGER))
     await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("buy_"))
@@ -165,10 +179,10 @@ async def cb_inventory(callback: types.CallbackQuery):
         for name in items:
             text += f"• {name}\n"
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🔙 НАЗАД", callback_data="back_main"))
+    builder.row(InlineKeyboardButton(text="🔙 НАЗАД", callback_data="back_main", style=ButtonStyle.DANGER))
     await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
-# --- ТОП ---
+# --- ТОП (С КЛИКАБЕЛЬНЫМИ НИКАМИ) ---
 @dp.callback_query(F.data == "leaderboard")
 async def cb_leaderboard(callback: types.CallbackQuery):
     conn = sqlite3.connect('game.db')
@@ -180,20 +194,18 @@ async def cb_leaderboard(callback: types.CallbackQuery):
     text = "🏆 <b>ТОП-10 ИГРОКОВ</b>\n\n"
     for i, (uid, bal) in enumerate(top, 1):
         medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-        text += f"{medal} ID {uid} — <b>{bal}</b>\n"
+        # Делаем ссылку на профиль пользователя по ID
+        user_link = f"<a href='tg://user?id={uid}'>Игрок {uid}</a>"
+        text += f"{medal} {user_link} — <b>{bal}</b>\n"
     
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🔙 НАЗАД", callback_data="back_main"))
+    builder.row(InlineKeyboardButton(text="🔙 НАЗАД", callback_data="back_main", style=ButtonStyle.DANGER))
     await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
-# --- КАЗИНО (МГНОВЕННО, БЕЗ ВВОДА СТАВОК) ---
+# --- КАЗИНО ---
 @dp.callback_query(F.data == "casino")
 async def cb_casino(callback: types.CallbackQuery):
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🪙 МОНЕТКА (ставка 100)", callback_data="game_coin_100"))
-    builder.row(InlineKeyboardButton(text="🎲 КУБИК (ставка 100)", callback_data="game_dice_100"))
-    builder.row(InlineKeyboardButton(text="🔙 НАЗАД", callback_data="back_main"))
-    await callback.message.edit_text("🎰 <b>КАЗИНО</b>\n\nВыбери игру (ставка 100 монет):", reply_markup=builder.as_markup(), parse_mode="HTML")
+    await callback.message.edit_text("🎰 <b>КАЗИНО</b>\n\nВыбери игру (ставка 100 монет):", reply_markup=casino_menu(), parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("game_"))
 async def cb_game(callback: types.CallbackQuery):
@@ -233,13 +245,13 @@ async def admin_panel(callback: types.CallbackQuery):
         await callback.answer("⛔ Нет доступа!", show_alert=True)
         return
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="💸 Выдать монеты", callback_data="adm_give"))
-    builder.row(InlineKeyboardButton(text="🔙 НАЗАД", callback_data="back_main"))
+    builder.row(InlineKeyboardButton(text="💸 Выдать монеты", callback_data="adm_give", style=ButtonStyle.SUCCESS))
+    builder.row(InlineKeyboardButton(text="🔙 НАЗАД", callback_data="back_main", style=ButtonStyle.DANGER))
     await callback.message.edit_text("⚙️ <b>АДМИН-ПАНЕЛЬ</b>", reply_markup=builder.as_markup(), parse_mode="HTML")
 
 @dp.callback_query(F.data == "adm_give")
 async def adm_give(callback: types.CallbackQuery):
-    await callback.message.edit_text("💸 Чтобы выдать монеты, просто напиши боту: `give ID СУММА`", parse_mode="HTML")
+    await callback.message.edit_text("💸 Чтобы выдать монеты, просто напиши боту: <code>give ID СУММА</code>", parse_mode="HTML")
 
 @dp.message(F.text.startswith("give "))
 async def admin_give_msg(message: types.Message):
@@ -250,7 +262,7 @@ async def admin_give_msg(message: types.Message):
         update_balance(uid, amount)
         await message.answer(f"✅ Выдано {amount} монет пользователю {uid}.")
     except:
-        await message.answer("❌ Ошибка формата. Пример: `give 123456789 500`")
+        await message.answer("❌ Ошибка формата. Пример: <code>give 123456789 500</code>", parse_mode="HTML")
 
 # --- ЗАГЛУШКА ДЛЯ RENDER ---
 app = Flask(__name__)
