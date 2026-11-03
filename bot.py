@@ -9,9 +9,9 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.enums import ButtonStyle  # Импорт для цветных кнопок
+from aiogram.enums import ButtonStyle # Импорт цветов
 
-BOT_TOKEN = "9184406467:AAEkDKfcYKBor-UVNPALRaBV2BOQm0zj8e4"
+BOT_TOKEN = "9184406467:AAFmFZQy4JUzXESDoBbL0FTEglvl_ldSV04"
 ADMIN_ID = 8907438590
 
 bot = Bot(BOT_TOKEN)
@@ -112,8 +112,6 @@ async def cb_profile(callback: types.CallbackQuery):
     bal, _ = get_user(callback.from_user.id)
     items = get_inventory(callback.from_user.id)
     income = calculate_passive_income(callback.from_user.id)
-    
-    # Делаем профиль кликабельным
     user_link = f"<a href='tg://user?id={callback.from_user.id}'>{callback.from_user.first_name}</a>"
     
     text = (f"👤 <b>ПРОФИЛЬ</b>\n\n"
@@ -182,7 +180,7 @@ async def cb_inventory(callback: types.CallbackQuery):
     builder.row(InlineKeyboardButton(text="🔙 НАЗАД", callback_data="back_main", style=ButtonStyle.DANGER))
     await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
-# --- ТОП (С КЛИКАБЕЛЬНЫМИ НИКАМИ) ---
+# --- ТОП ---
 @dp.callback_query(F.data == "leaderboard")
 async def cb_leaderboard(callback: types.CallbackQuery):
     conn = sqlite3.connect('game.db')
@@ -194,7 +192,6 @@ async def cb_leaderboard(callback: types.CallbackQuery):
     text = "🏆 <b>ТОП-10 ИГРОКОВ</b>\n\n"
     for i, (uid, bal) in enumerate(top, 1):
         medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-        # Делаем ссылку на профиль пользователя по ID
         user_link = f"<a href='tg://user?id={uid}'>Игрок {uid}</a>"
         text += f"{medal} {user_link} — <b>{bal}</b>\n"
     
@@ -251,7 +248,7 @@ async def admin_panel(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "adm_give")
 async def adm_give(callback: types.CallbackQuery):
-    await callback.message.edit_text("💸 Чтобы выдать монеты, просто напиши боту: <code>give ID СУММА</code>", parse_mode="HTML")
+    await callback.message.edit_text("💸 Чтобы выдать монеты, напиши: <code>give ID СУММА</code>", parse_mode="HTML")
 
 @dp.message(F.text.startswith("give "))
 async def admin_give_msg(message: types.Message):
@@ -262,7 +259,7 @@ async def admin_give_msg(message: types.Message):
         update_balance(uid, amount)
         await message.answer(f"✅ Выдано {amount} монет пользователю {uid}.")
     except:
-        await message.answer("❌ Ошибка формата. Пример: <code>give 123456789 500</code>", parse_mode="HTML")
+        await message.answer("❌ Формат: <code>give 123456789 500</code>", parse_mode="HTML")
 
 # --- ЗАГЛУШКА ДЛЯ RENDER ---
 app = Flask(__name__)
