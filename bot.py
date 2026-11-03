@@ -4,6 +4,8 @@ import sqlite3
 import time
 import hashlib
 import os
+import threading
+from flask import Flask
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -12,14 +14,13 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.enums import ButtonStyle
 
-BOT_TOKEN = "9020652959:AAFf-5eGmohPmVqDEG7rhR6n2r4ToHX3OJw"
-# ВАЖНО: Вставь сюда свой Telegram ID (узнать можно у бота @userinfobot)
+# --- НАСТРОЙКИ (ОБЯЗАТЕЛЬНО ЗАМЕНИ) ---
+BOT_TOKEN = "9020652959:AAHK-spf5gRDxki8HL12D8uLYbPMqsrq_Ys"
 ADMIN_ID = 8907438590
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
-# Новые NFT с пассивным доходом (проценты)
 SHOP_ITEMS = {
     "🚀 Ракета": {"price": 50, "income": 5},
     "💎 Алмаз": {"price": 100, "income": 10},
@@ -33,21 +34,17 @@ class UserStates(StatesGroup):
     reg_password = State()
     login_username = State()
     login_password = State()
-    # Игры
     waiting_for_bet = State()
     minefield_bet = State()
     minefield_play = State()
-    # Рынок
     selling_price = State()
     offer_amount = State()
-    # Админка
     broadcast_msg = State()
 
 # --- БД ---
 def init_db():
     conn = sqlite3.connect('game.db')
     c = conn.cursor()
-    # Таблица пользователей: добавлены username и password_hash
     c.execute('''CREATE TABLE IF NOT EXISTS users (
                  user_id INTEGER PRIMARY KEY, 
                  username TEXT UNIQUE, 
@@ -55,7 +52,6 @@ def init_db():
                  balance INTEGER DEFAULT 1000, 
                  last_bonus INTEGER DEFAULT 0, 
                  market_earnings INTEGER DEFAULT 0)''')
-    
     c.execute('''CREATE TABLE IF NOT EXISTS inventory (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, item_name TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS market (id INTEGER PRIMARY KEY AUTOINCREMENT, seller_id INTEGER, item_name TEXT, price INTEGER)''')
     c.execute('''CREATE TABLE IF NOT EXISTS offers (id INTEGER PRIMARY KEY AUTOINCREMENT, market_id INTEGER, buyer_id INTEGER, amount INTEGER)''')
@@ -124,7 +120,6 @@ def get_inventory(user_id):
     return items
 
 def calculate_passive_income(user_id):
-    """Считает доход от всех NFT в инвентаре"""
     items = get_inventory(user_id)
     total_income = 0
     for _, name in items:
@@ -133,10 +128,9 @@ def calculate_passive_income(user_id):
     return total_income
 
 def buy_item(user_id, item_name, price):
-    if calculate_passive_income(user_id) + price > 100000: # Защита от читов
-        pass
-    
-    bal, _, _, _, _ = get_user(user_id)
+    user = get_user(user_id)
+    if not user: return False
+    bal = user[2]
     if bal < price: return False
     update_balance(user_id, -price)
     conn = sqlite3.connect('game.db')
@@ -165,11 +159,8 @@ def main_menu(user_id):
         InlineKeyboardButton(text="👤 ПРОФИЛЬ", callback_data="profile", style=ButtonStyle.SUCCESS)
     )
     builder.row(InlineKeyboardButton(text="🎁 БОНУС", callback_data="daily", style=ButtonStyle.SUCCESS))
-    
-    # Кнопка админки только для админа
     if user_id == ADMIN_ID:
         builder.row(InlineKeyboardButton(text="⚙️ АДМИН-ПАНЕЛЬ", callback_data="admin_panel", style=ButtonStyle.DANGER))
-        
     return builder.as_markup()
 
 def casino_menu():
@@ -187,8 +178,8 @@ def casino_menu():
 @dp.message(Command("start"))
 async def start(message: types.Message):
     user = get_user(message.from_user.id)
-    if user: # Если уже есть в базе
-        text = f"👋 С возвращением, <b>{user[1]}</b>!\n💰 Баланс: <b>{user[2]}</b>\n📈 Доход с NFT: <b>+{calculate_passive_income(message.from_user.id)}</b> монет к бонусу."
+    if user:
+        text = f"👋 С возвращением, <b>{user[1]}</b>!\n💰 Баланс: <b>{user[2]}</b>\n📈 Доход с NFT: <b>+{calculate_passive_income(message.from_user.id)}</b> к бонусу."
         await message.answer(text, reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
     else:
         text = "🌟 <b>Добро пожаловать в NFT CASINO!</b>\n\nДля начала игры тебе нужно создать аккаунт.\nНажми кнопку ниже:"
@@ -205,11 +196,9 @@ async def reg_username(message: types.Message, state: FSMContext):
     if len(username) < 3 or " " in username:
         await message.answer("❌ Никнейм должен быть от 3 символов и без пробелов. Попробуй еще раз:")
         return
-    
     if get_user_by_username(username):
         await message.answer("❌ Этот никнейм уже занят! Введи другой:")
         return
-        
     await state.update_data(reg_username=username)
     await message.answer("🔒 Теперь придумай <b>пароль</b> (минимум 4 символа):", parse_mode="HTML")
     await state.set_state(UserStates.reg_password)
@@ -220,14 +209,12 @@ async def reg_password(message: types.Message, state: FSMContext):
     if len(password) < 4:
         await message.answer("❌ Пароль слишком короткий (минимум 4 символа):")
         return
-        
     data = await state.get_data()
     username = data['reg_username']
-    
     if create_user(message.from_user.id, username, password):
         await message.answer(f"✅ Аккаунт <b>{username}</b> успешно создан!\nТвой стартовый баланс: 1000 монет.", reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
     else:
-        await message.answer("❌ Ошибка при создании. Возможно, ник занят.")
+        await message.answer("❌ Ошибка при создании.")
     await state.clear()
 
 @dp.callback_query(F.data == "auth_login")
@@ -250,10 +237,8 @@ async def login_password(message: types.Message, state: FSMContext):
     password = message.text.strip()
     data = await state.get_data()
     username = data['login_username']
-    
     user_data = get_user_by_username(username)
     if user_data and user_data[1] == hash_pass(password):
-        # Привязываем текущий Telegram ID к аккаунту (на случай смены устройства)
         conn = sqlite3.connect('game.db')
         c = conn.cursor()
         c.execute("UPDATE users SET user_id = ? WHERE username = ?", (message.from_user.id, username))
@@ -270,40 +255,34 @@ async def admin_panel(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("⛔ У тебя нет доступа!", show_alert=True)
         return
-    
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="📢 Сделать рассылку", callback_data="admin_broadcast", style=ButtonStyle.SUCCESS))
     builder.row(InlineKeyboardButton(text="🔙 НАЗАД", callback_data="back_main", style=ButtonStyle.DANGER))
-    
-    text = "⚙️ <b>АДМИН-ПАНЕЛЬ</b>\n\nВыбери действие:"
-    await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    await callback.message.edit_text("⚙️ <b>АДМИН-ПАНЕЛЬ</b>", reply_markup=builder.as_markup(), parse_mode="HTML")
 
 @dp.callback_query(F.data == "admin_broadcast")
 async def admin_broadcast_start(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("📢 Введи текст сообщения для рассылки всем игрокам:")
+    await callback.message.edit_text("📢 Введи текст сообщения для рассылки:")
     await state.set_state(UserStates.broadcast_msg)
 
 @dp.message(UserStates.broadcast_msg)
 async def admin_broadcast_send(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
+    if message.from_user.id != ADMIN_ID: return
     text = message.text
     conn = sqlite3.connect('game.db')
     c = conn.cursor()
     c.execute("SELECT user_id FROM users")
     users = c.fetchall()
     conn.close()
-    
     count = 0
-    await message.answer("🚀 Начинаю рассылку...")
+    await message.answer("🚀 Рассылка пошла...")
     for (uid,) in users:
         try:
             await bot.send_message(uid, f"📢 <b>Сообщение от администрации:</b>\n\n{text}", parse_mode="HTML")
             count += 1
-            await asyncio.sleep(0.05) # Защита от бана Telegram за спам
-        except:
-            pass
-    await message.answer(f"✅ Рассылка завершена! Отправлено {count} пользователям.", reply_markup=main_menu(message.from_user.id))
+            await asyncio.sleep(0.05)
+        except: pass
+    await message.answer(f"✅ Отправлено {count} пользователям.", reply_markup=main_menu(message.from_user.id))
     await state.clear()
 
 # --- ПРОФИЛЬ И БОНУСЫ ---
@@ -314,57 +293,42 @@ async def cb_back(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "profile")
 async def cb_profile(callback: types.CallbackQuery):
     user = get_user(callback.from_user.id)
-    if not user:
-        await callback.answer("Сначала авторизуйся /start")
-        return
-    
+    if not user: return
     _, username, balance, _, earnings = user
     items = get_inventory(callback.from_user.id)
     income = calculate_passive_income(callback.from_user.id)
-    
-    text = (f"╔══════════════════╗\n"
-            f"   👤 <b>ПРОФИЛЬ</b>\n"
-            f"╚══════════════════╝\n\n"
-            f"🏷 Ник: <b>{username}</b>\n"
-            f"💰 Баланс: <b>{balance}</b> монет\n"
-            f"🎒 NFT: <b>{len(items)}</b> шт.\n"
-            f"📈 Доход с NFT: <b>+{income}</b> к бонусу\n"
-            f"💼 Заработано на рынке: <b>{earnings}</b>")
+    text = (f"╔══════════════════╗\n   👤 <b>ПРОФИЛЬ</b>\n╚══════════════════╝\n\n"
+            f"🏷 Ник: <b>{username}</b>\n💰 Баланс: <b>{balance}</b> монет\n"
+            f"🎒 NFT: <b>{len(items)}</b> шт.\n📈 Доход с NFT: <b>+{income}</b> к бонусу\n"
+            f"💼 Наторговал: <b>{earnings}</b>")
     await callback.message.edit_text(text, reply_markup=main_menu(callback.from_user.id), parse_mode="HTML")
 
 @dp.callback_query(F.data == "daily")
 async def cb_daily(callback: types.CallbackQuery):
     user = get_user(callback.from_user.id)
-    if not user:
-        return
-        
+    if not user: return
     now = int(time.time())
     if now - user[3] < 86400:
         left = 86400 - (now - user[3])
         await callback.answer(f"⏳ Жди: {left//3600}ч {(left%3600)//60}м", show_alert=True)
         return
-        
-    # Считаем доход
     base_bonus = DAILY_BONUS
     nft_income = calculate_passive_income(callback.from_user.id)
     total_bonus = base_bonus + nft_income
-    
     update_balance(callback.from_user.id, total_bonus)
     update_bonus_time(callback.from_user.id, now)
-    
-    await callback.answer(f"🎉 Бонус: +{base_bonus} (база) +{nft_income} (NFT) = {total_bonus} монет!", show_alert=True)
+    await callback.answer(f"🎉 +{base_bonus} база +{nft_income} NFT = {total_bonus} монет!", show_alert=True)
     await callback.message.edit_text("🎁 Бонус получен!", reply_markup=main_menu(callback.from_user.id), parse_mode="HTML")
 
-# --- МАГАЗИН (С ПРОЦЕНТАМИ) ---
+# --- МАГАЗИН ---
 @dp.callback_query(F.data == "shop")
 async def cb_shop(callback: types.CallbackQuery):
     text = "🛒 <b>МАГАЗИН NFT</b>\n\n"
     builder = InlineKeyboardBuilder()
     for name, data in SHOP_ITEMS.items():
-        text += f"{name} — <b>{data['price']}</b> монет\n"
-        text += f"└ Прибыль: <b>+{data['income']}</b> к бонусу\n\n"
+        text += f"{name} — <b>{data['price']}</b> монет\n└ Прибыль: <b>+{data['income']}</b> к бонусу\n\n"
         builder.row(InlineKeyboardButton(text=f"Купить {name}", callback_data=f"buy_{name}", style=ButtonStyle.SUCCESS))
-    builder.row(InlineKeyboardButton(text="🏪 РЫНОК ИГРОКОВ", callback_data="market", style=ButtonStyle.PRIMARY))
+    builder.row(InlineKeyboardButton(text="🏪 РЫНОК", callback_data="market", style=ButtonStyle.PRIMARY))
     builder.row(InlineKeyboardButton(text="🔙 НАЗАД", callback_data="back_main", style=ButtonStyle.DANGER))
     await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
@@ -372,8 +336,24 @@ async def cb_shop(callback: types.CallbackQuery):
 async def cb_buy(callback: types.CallbackQuery):
     item = callback.data.replace("buy_", "")
     if item in SHOP_ITEMS:
-        price = SHOP_ITEMS[item]["price"]
-        if buy_item(callback.from_user.id, item, price):
+        if buy_item(callback.from_user.id, item, SHOP_ITEMS[item]["price"]):
             await callback.answer(f"✅ Куплено: {item}", show_alert=True)
         else:
             await callback.answer("❌ Не хватает монет!", show_alert=True)
+
+# --- ЗАГЛУШКА ДЛЯ RENDER ---
+app = Flask(__name__)
+@app.route('/')
+def health(): return "Bot is running", 200
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+async def main():
+    init_db()
+    threading.Thread(target=run_flask, daemon=True).start()
+    print("Бот и веб-сервер запущены!")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
