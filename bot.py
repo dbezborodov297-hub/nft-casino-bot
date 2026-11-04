@@ -2,14 +2,14 @@ import asyncio
 import random
 import sqlite3
 import os
-import threading
 import time
+from threading import Thread
 from flask import Flask
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
-# --- ТОКЕН ---
-BOT_TOKEN = "9253824362:AAFCSkUmMbcvaO0GJjcE_i01iOd221Pr5IM"
+# --- НАСТРОЙКИ ---
+BOT_TOKEN = "9253824362:AAH8CjRLaM74vR9rgv2ElDLGffj4iW-b-yQ" 
 ADMIN_ID = 8907438590 
 
 bot = Bot(BOT_TOKEN)
@@ -59,7 +59,7 @@ def update_user_info(user_id, username, first_name):
               (user_id, username, first_name, username, first_name))
     conn.commit(); conn.close()
 
-# --- СЧЕТЧИК СТАТИСТИКИ (ЗАЩИТА ОТ СТИКЕРОВ) ---
+# --- СЧЕТЧИК ---
 @dp.message(lambda message: message.text is not None)
 async def track_stats(message: types.Message):
     if message.chat.type == "private" or message.text.startswith('/'): return
@@ -119,7 +119,7 @@ async def open_card(message: types.Message):
     
     await msg.edit_text(f"🎉 <b>Карточка открыта!</b>\n\n<blockquote>{reward}</blockquote>", parse_mode="HTML")
 
-# --- ТАБЛИЦА ЛИДЕРОВ ---
+# --- ТОП ---
 @dp.message(Command("top"))
 async def top(message: types.Message):
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
@@ -137,7 +137,6 @@ async def top(message: types.Message):
         else: display_name = "Игрок"
         text += f"{medal} {display_name} — <b>{coins}</b> 🪙\n"
     text += "</blockquote>"
-    
     await message.answer(text, parse_mode="HTML")
 
 # --- СТАТИСТИКА ---
@@ -154,15 +153,14 @@ async def stats(message: types.Message):
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM chat_stats WHERE chat_id = ? AND timestamp > ?", (chat_id, five_hours_ago))
     count_5h = c.fetchone()[0]
-    
     c.execute("SELECT COUNT(*) FROM chat_stats WHERE chat_id = ? AND timestamp > ?", (chat_id, one_day_ago))
     count_24h = c.fetchone()[0]
     conn.close()
     
     text = (f"📊 <b>СТАТИСТИКА ЧАТА</b>\n\n"
             f"<blockquote>"
-            f"🕒 За последние 5 часов: <b>{count_5h}</b> сообщений\n"
-            f"📅 За последние 24 часа: <b>{count_24h}</b> сообщений"
+            f"🕒 За 5 часов: <b>{count_5h}</b> сообщений\n"
+            f"📅 За 24 часа: <b>{count_24h}</b> сообщений"
             f"</blockquote>")
     await message.reply(text, parse_mode="HTML")
 
@@ -189,8 +187,11 @@ async def profile(message: types.Message):
 async def main():
     init_db()
     await bot.delete_webhook(drop_pending_updates=True)
-    threading.Thread(target=run_flask, daemon=True).start()
-    print("Бот запущен!")
+    
+    Thread(target=run_flask, daemon=True).start()
+    await asyncio.sleep(3)
+    
+    print("🚀 Бот запущен!")
     await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
