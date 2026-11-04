@@ -10,7 +10,7 @@ from aiogram.filters import Command
 from aiogram.types import ChatPermissions
 
 # --- НАСТРОЙКИ ---
-BOT_TOKEN = "9209660223:AAG94hAlU6rv76KHxWzoB1jgU6e76P4zfHw"
+BOT_TOKEN = "9209660223:AAHTLeX9YvoJaeB_7Yl1WPj4OjG8A2qXSzI"
 ADMIN_ID = 8907438590 
 
 bot = Bot(BOT_TOKEN)
@@ -64,9 +64,212 @@ def update_user_info(user_id, username, first_name):
         (user_id, username, first_name))
     conn.commit(); conn.close()
 
-# --- ПРОВЕРКА (ТОЛЬКО ДЛЯ ТЕБЯ) ---
 async def is_admin(message: types.Message):
     return message.from_user.id == ADMIN_ID
+
+# --- ИНСТРУКЦИЯ ---
+@dp.message(Command("help"))
+async def help_cmd(message: types.Message):
+    text = (
+        f"📖 <b>ИНСТРУКЦИЯ ПО КОМАНДАМ</b>\n\n"
+        f"<b>👤 Экономика:</b>\n"
+        f"• <b>.карточка</b> — открыть карточку (раз в 10 минут, падает 5-10 монет/ирисок)\n"
+        f"• <b>/profile</b> — твой профиль (уровень, баланс, прогресс-бар)\n"
+        f"• <b>/top</b> — таблица лидеров по монетам\n\n"
+        f"<b>🛡 Кланы:</b>\n"
+        f"• <b>/clan_create [Название]</b> — создать клан\n"
+        f"• <b>/clan_info [Название]</b> — информация о клане\n\n"
+        f"<b>📊 Аналитика:</b>\n"
+        f"• <b>/stats</b> — статистика чата (сообщения за 5ч и 24ч)\n\n"
+        f"<b>🔨 Модерация (только для владельца):</b>\n"
+        f"• <b>/mute</b> — замутить (ответом на сообщение)\n"
+        f"• <b>/unmute</b> — размутить\n"
+        f"• <b>/ban</b> — забанить\n"
+        f"• <b>/kick</b> — кикнуть\n"
+        f"• <b>/unban [ID]</b> — разбанить по ID\n"
+        f"• <b>/close_chat</b> — закрыть чат\n"
+        f"• <b>/open_chat</b> — открыть чат\n\n"
+        f"<b>🤖 Управление ботами:</b>\n"
+        f"• <b>/mute_bot</b> — заглушить одного бота (ответом)\n"
+        f"• <b>/mute_all_bots</b> — заглушить всех ботов\n"
+        f"• <b>/unmute_all_bots</b> — разглушить всех ботов\n"
+    )
+    await message.answer(text, parse_mode="HTML")
+
+# --- ПРОФИЛЬ ---
+@dp.message(Command("profile"))
+async def profile(message: types.Message):
+    target = message.reply_to_message.from_user if message.reply_to_message else message.from_user
+    coins, iris, xp, level, last_card = get_user(target.id)
+    needed_xp = level * 5000
+    progress = min(int((xp / needed_xp) * 10), 10)
+    bar = "█" * progress + "░" * (10 - progress)
+    text = (f"👤 <b>ПРОФИЛЬ {target.first_name}</b>\n\n"
+            f"🆔 <code>{target.id}</code>\n"
+            f"📈 Уровень: <b>{level}</b>\n"
+            f"✨ Опыт: <b>{xp}</b> / {needed_xp}\n"
+            f"[{bar}]\n\n"
+            f"🪙 Монеты: <b>{coins}</b>\n"
+            f"🍬 Ириски: <b>{iris}</b>")
+    await message.answer(text, parse_mode="HTML")
+
+# --- ТОП ---
+@dp.message(Command("top"))
+async def top(message: types.Message):
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("SELECT username, first_name, coins FROM users ORDER BY coins DESC LIMIT 5")
+    top_players = c.fetchall(); conn.close()
+    if not top_players: return await message.answer("Пока нет игроков в топе.")
+    text = "🏆 <b>ТАБЛИЦА ЛИДЕРОВ</b> 🏆\n\n<blockquote>"
+    for i, (username, first_name, coins) in enumerate(top_players, 1):
+        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+        if username: display_name = f"@{username}"
+        elif first_name: display_name = first_name
+        else: display_name = "Игрок"
+        text += f"{medal} {display_name} — <b>{coins}</b> 🪙\n"
+    text += "</blockquote>"
+    await message.answer(text, parse_mode="HTML")
+
+# --- КАРТОЧКА (5-10) ---
+@dp.message(lambda message: message.text and message.text.lower() == ".карточка")
+async def open_card(message: types.Message):
+    user_id = message.from_user.id
+    coins, iris, xp, level, last_card = get_user(user_id)
+    now = time.time()
+    if now - last_card < 600:
+        left = 600 - (now - last_card)
+        return await message.reply(f"⏳ Жди: {int(left // 60)}м {int(left % 60)}с.")
+    
+    msg = await message.reply("🎴 <b>Открываем карточку...</b>", parse_mode="HTML")
+    await asyncio.sleep(1)
+    await msg.edit_text("🔄 <b>Крутим барабаны...</b>", parse_mode="HTML")
+    await asyncio.sleep(1)
+    await msg.edit_text("✨ <b>Почти готово...</b>", parse_mode="HTML")
+    await asyncio.sleep(1)
+
+    if random.choice([True, False]):
+        amount = random.randint(5, 10)
+        reward = f"🪙 Тебе выпало <b>{amount}</b> монет!"
+        new_coins, new_iris = coins + amount, iris
+    else:
+        amount = random.randint(5, 10)
+        reward = f"🍬 Тебе выпало <b>{amount}</b> ирисок!"
+        new_coins, new_iris = coins, iris + amount
+
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("UPDATE users SET coins = ?, iris = ?, xp = xp + 5, last_card = ? WHERE user_id = ?", 
+              (new_coins, new_iris, now, user_id))
+    conn.commit(); conn.close()
+    await msg.edit_text(f"🎉 <b>Карточка открыта!</b>\n\n<blockquote>{reward}</blockquote>", parse_mode="HTML")
+
+# --- КЛАНЫ ---
+@dp.message(Command("clan_create"))
+async def clan_create(message: types.Message):
+    if message.chat.type == "private": return await message.reply("Только в группах.")
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2: return await message.reply("Используй: /clan_create [Название]")
+    clan_name = args[1]
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    try:
+        c.execute("INSERT INTO clans (name, owner_id, members) VALUES (?, ?, ?)", (clan_name, message.from_user.id, str(message.from_user.id)))
+        conn.commit()
+        await message.reply(f"🛡 Клан <b>{clan_name}</b> создан! Ты лидер.", parse_mode="HTML")
+    except sqlite3.IntegrityError:
+        await message.reply("❌ Клан с таким названием уже существует.")
+    conn.close()
+
+@dp.message(Command("clan_info"))
+async def clan_info(message: types.Message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2: return await message.reply("Используй: /clan_info [Название]")
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("SELECT owner_id, members FROM clans WHERE name = ?", (args[1],))
+    res = c.fetchone(); conn.close()
+    if not res: return await message.reply("❌ Клан не найден.")
+    owner, members = res
+    members_list = members.split(",")
+    await message.reply(f"🛡 <b>Клан {args[1]}</b>\n👑 Лидер: <code>{owner}</code>\n👥 Участников: {len(members_list)}", parse_mode="HTML")
+
+# --- СТАТИСТИКА ---
+@dp.message(Command("stats"))
+async def stats(message: types.Message):
+    if message.chat.type == "private": return await message.reply("Только в группах.")
+    chat_id = message.chat.id
+    now = time.time()
+    five_hours_ago = now - (5 * 3600)
+    one_day_ago = now - (24 * 3600)
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM chat_stats WHERE chat_id = ? AND timestamp > ?", (chat_id, five_hours_ago))
+    count_5h = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM chat_stats WHERE chat_id = ? AND timestamp > ?", (chat_id, one_day_ago))
+    count_24h = c.fetchone()[0]
+    conn.close()
+    text = (f"📊 <b>АНАЛИТИКА ЧАТА</b>\n\n<blockquote>🕒 За 5 часов: <b>{count_5h}</b> сообщений\n📅 За 24 часа: <b>{count_24h}</b> сообщений</blockquote>")
+    await message.reply(text, parse_mode="HTML")
+
+# --- МОДЕРАЦИЯ ---
+@dp.message(Command("mute"))
+async def mute_user(message: types.Message):
+    if not await is_admin(message): return await message.reply("❌ Нет прав.")
+    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение.")
+    try:
+        await bot.restrict_chat_member(message.chat.id, message.reply_to_message.from_user.id, ChatPermissions(can_send_messages=False), until_date=int(time.time()) + 3600)
+        await message.reply(f"🤐 Замучен на час.")
+    except Exception as e: await message.reply(f"Ошибка: {e}")
+
+@dp.message(Command("unmute"))
+async def unmute_user(message: types.Message):
+    if not await is_admin(message): return await message.reply("❌ Нет прав.")
+    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение.")
+    try:
+        await bot.restrict_chat_member(message.chat.id, message.reply_to_message.from_user.id, ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True))
+        await message.reply(f"🔊 Размучен.")
+    except Exception as e: await message.reply(f"Ошибка: {e}")
+
+@dp.message(Command("ban"))
+async def ban_user(message: types.Message):
+    if not await is_admin(message): return await message.reply("❌ Нет прав.")
+    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение.")
+    try:
+        await bot.ban_chat_member(message.chat.id, message.reply_to_message.from_user.id)
+        await message.reply(f"🔨 Забанен.")
+    except Exception as e: await message.reply(f"Ошибка: {e}")
+
+@dp.message(Command("kick"))
+async def kick_user(message: types.Message):
+    if not await is_admin(message): return await message.reply("❌ Нет прав.")
+    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение.")
+    try:
+        await bot.ban_chat_member(message.chat.id, message.reply_to_message.from_user.id)
+        await bot.unban_chat_member(message.chat.id, message.reply_to_message.from_user.id)
+        await message.reply(f"👢 Кикнут.")
+    except Exception as e: await message.reply(f"Ошибка: {e}")
+
+@dp.message(Command("unban"))
+async def unban_user(message: types.Message):
+    if not await is_admin(message): return await message.reply("❌ Нет прав.")
+    args = message.text.split()
+    if len(args) < 2: return await message.reply("❌ Введи ID: /unban 123456789")
+    try:
+        await bot.unban_chat_member(message.chat.id, int(args[1]))
+        await message.reply(f"🔓 Разбанен.")
+    except Exception as e: await message.reply(f"Ошибка: {e}")
+
+@dp.message(Command("close_chat"))
+async def close_chat(message: types.Message):
+    if not await is_admin(message): return await message.reply("❌ Нет прав.")
+    try:
+        await bot.set_chat_permissions(message.chat.id, ChatPermissions(can_send_messages=False))
+        await message.reply("🔒 Чат закрыт.")
+    except Exception as e: await message.reply(f"Ошибка: {e}")
+
+@dp.message(Command("open_chat"))
+async def open_chat(message: types.Message):
+    if not await is_admin(message): return await message.reply("❌ Нет прав.")
+    try:
+        await bot.set_chat_permissions(message.chat.id, ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True))
+        await message.reply("🔓 Чат открыт.")
+    except Exception as e: await message.reply(f"Ошибка: {e}")
 
 # --- ГЛУШИЛКА БОТОВ ---
 @dp.message(lambda message: message.from_user and message.from_user.is_bot)
@@ -96,7 +299,7 @@ async def mute_all_bots(message: types.Message):
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
     c.execute("INSERT OR IGNORE INTO muted_bots (chat_id, bot_id) VALUES (?, 0)", (message.chat.id,))
     conn.commit(); conn.close()
-    await message.reply("🤐 Все боты в этом чате заглушены.")
+    await message.reply("🤐 Все боты заглушены.")
 
 @dp.message(Command("unmute_all_bots"))
 async def unmute_all_bots(message: types.Message):
@@ -106,147 +309,17 @@ async def unmute_all_bots(message: types.Message):
     conn.commit(); conn.close()
     await message.reply("🔊 Все боты разглушены.")
 
-# --- МУТЫ И БАНЫ ДЛЯ ЛЮДЕЙ ---
-@dp.message(Command("mute"))
-async def mute_user(message: types.Message):
-    if not await is_admin(message): return await message.reply("❌ Нет прав.")
-    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение нарушителя.")
-    try:
-        await bot.restrict_chat_member(
-            message.chat.id, 
-            message.reply_to_message.from_user.id, 
-            ChatPermissions(can_send_messages=False),
-            until_date=int(time.time()) + 3600
-        )
-        await message.reply(f"🤐 {message.reply_to_message.from_user.first_name} замучен на 1 час.")
-    except Exception as e: await message.reply(f"Ошибка: {e}")
-
-@dp.message(Command("unmute"))
-async def unmute_user(message: types.Message):
-    if not await is_admin(message): return await message.reply("❌ Нет прав.")
-    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение.")
-    try:
-        await bot.restrict_chat_member(
-            message.chat.id, 
-            message.reply_to_message.from_user.id, 
-            ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True)
-        )
-        await message.reply(f"🔊 {message.reply_to_message.from_user.first_name} размучен.")
-    except Exception as e: await message.reply(f"Ошибка: {e}")
-
-@dp.message(Command("ban"))
-async def ban_user(message: types.Message):
-    if not await is_admin(message): return await message.reply("❌ Нет прав.")
-    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение нарушителя.")
-    try:
-        await bot.ban_chat_member(message.chat.id, message.reply_to_message.from_user.id)
-        await message.reply(f"🔨 {message.reply_to_message.from_user.first_name} забанен.")
-    except Exception as e: await message.reply(f"Ошибка: {e}")
-
-@dp.message(Command("kick"))
-async def kick_user(message: types.Message):
-    if not await is_admin(message): return await message.reply("❌ Нет прав.")
-    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение нарушителя.")
-    try:
-        await bot.ban_chat_member(message.chat.id, message.reply_to_message.from_user.id)
-        await bot.unban_chat_member(message.chat.id, message.reply_to_message.from_user.id)
-        await message.reply(f"👢 {message.reply_to_message.from_user.first_name} кикнут.")
-    except Exception as e: await message.reply(f"Ошибка: {e}")
-
-@dp.message(Command("unban"))
-async def unban_user(message: types.Message):
-    if not await is_admin(message): return await message.reply("❌ Нет прав.")
-    args = message.text.split()
-    if len(args) < 2: return await message.reply("❌ Введи ID: /unban 123456789")
-    try:
-        await bot.unban_chat_member(message.chat.id, int(args[1]))
-        await message.reply(f"🔓 Пользователь {args[1]} разбанен.")
-    except Exception as e: await message.reply(f"Ошибка: {e}")
-
-# --- УПРАВЛЕНИЕ ЧАТОМ ---
-@dp.message(Command("close_chat"))
-async def close_chat(message: types.Message):
-    if not await is_admin(message): return await message.reply("❌ Нет прав.")
-    try:
-        await bot.set_chat_permissions(message.chat.id, ChatPermissions(can_send_messages=False))
-        await message.reply("🔒 Чат закрыт.")
-    except Exception as e: await message.reply(f"Ошибка: {e}")
-
-@dp.message(Command("open_chat"))
-async def open_chat(message: types.Message):
-    if not await is_admin(message): return await message.reply("❌ Нет прав.")
-    try:
-        await bot.set_chat_permissions(message.chat.id, ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True))
-        await message.reply("🔓 Чат открыт.")
-    except Exception as e: await message.reply(f"Ошибка: {e}")
-
-# --- КЛАНЫ ---
-@dp.message(Command("clan_create"))
-async def clan_create(message: types.Message):
-    if message.chat.type == "private": return await message.reply("Только в группах.")
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2: return await message.reply("Используй: /clan_create [Название]")
-    
-    clan_name = args[1]
-    conn = sqlite3.connect('bot.db'); c = conn.cursor()
-    try:
-        c.execute("INSERT INTO clans (name, owner_id, members) VALUES (?, ?, ?)", (clan_name, message.from_user.id, str(message.from_user.id)))
-        conn.commit()
-        await message.reply(f"🛡 Клан <b>{clan_name}</b> создан! Ты лидер.", parse_mode="HTML")
-    except sqlite3.IntegrityError:
-        await message.reply("❌ Клан с таким названием уже существует.")
-    conn.close()
-
-@dp.message(Command("clan_info"))
-async def clan_info(message: types.Message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2: return await message.reply("Используй: /clan_info [Название]")
-    
-    conn = sqlite3.connect('bot.db'); c = conn.cursor()
-    c.execute("SELECT owner_id, members FROM clans WHERE name = ?", (args[1],))
-    res = c.fetchone()
-    conn.close()
-    
-    if not res: return await message.reply("❌ Клан не найден.")
-    owner, members = res
-    members_list = members.split(",")
-    await message.reply(f"🛡 <b>Клан {args[1]}</b>\n👑 Лидер: <code>{owner}</code>\n👥 Участников: {len(members_list)}", parse_mode="HTML")
-
-# --- ДУЭЛИ ---
-@dp.message(Command("duel"))
-async def duel_start(message: types.Message):
-    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение соперника.")
-    opponent = message.reply_to_message.from_user
-    if opponent.id == message.from_user.id: return await message.reply("❌ Нельзя играть с собой.")
-    
-    bet = 100 
-    coins, _, _, _, _ = get_user(message.from_user.id)
-    if coins < bet: return await message.reply("❌ У тебя недостаточно монет для ставки 100.")
-    
-    await message.reply(f"⚔️ {message.from_user.first_name} вызывает {opponent.first_name} в крестики-нолики на {bet} монет!\n\n{opponent.first_name}, напиши /accept_duel чтобы принять.")
-
-@dp.message(Command("accept_duel"))
-async def duel_accept(message: types.Message):
-    await message.reply("✅ Дуэль принята! Игра начинается.\nДоска:\n1 2 3\n4 5 6\n7 8 9\n\nХоди цифрой от 1 до 9.")
-
-# --- СТАРТ И ПРОФИЛЬ ---
+# --- СТАРТ ---
 @dp.message(Command("start"))
 async def start(message: types.Message):
     get_user(message.from_user.id)
     text = (f"👋 <b>Привет, {message.from_user.first_name}!</b>\n\n"
-            f"🎴 .карточка\n"
-            f"👤 /profile\n"
-            f"🏆 /top\n"
-            f"📊 /stats\n"
-            f"🛡 /clan_create [Название]\n"
-            f"⚔️ /duel\n\n"
-            f"<b>Модерация (только для тебя):</b>\n"
-            f"/mute, /unmute, /ban, /kick, /unban\n"
-            f"/mute_bot, /mute_all_bots, /unmute_all_bots\n"
-            f"/close_chat, /open_chat")
+            f"Напиши /help, чтобы увидеть все команды бота.")
     await message.answer(text, parse_mode="HTML")
 
-# --- СЧЕТЧИК (В КОНЦЕ) ---
+# ==========================================
+# ⚠️ СЧЕТЧИК ИДЕТ САМЫМ ПОСЛЕДНИМ!
+# ==========================================
 @dp.message(lambda m: m.text and not m.text.startswith("/"))
 async def track_stats(message: types.Message):
     if message.chat.type == "private" or message.from_user.is_bot: return
