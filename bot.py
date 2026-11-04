@@ -7,9 +7,10 @@ from threading import Thread
 from flask import Flask
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from aiogram.types import ChatMemberAdministrator
 
 # --- НАСТРОЙКИ ---
-BOT_TOKEN = "9253824362:AAEJgpxFE-g8021fZjdDQaXb3j4rPQamtBc" 
+BOT_TOKEN = "9253824362:AAF1ZtSwD0MJAp5XN-BCoZr4KLMnwKSXJuc"
 ADMIN_ID = 8907438590 
 
 bot = Bot(BOT_TOKEN)
@@ -41,7 +42,12 @@ def init_db():
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  chat_id INTEGER,
                  user_id INTEGER,
+                 username TEXT,
                  timestamp REAL)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS muted_bots (
+                 chat_id INTEGER,
+                 bot_id INTEGER,
+                 PRIMARY KEY (chat_id, bot_id))''')
     conn.commit(); conn.close()
 
 def get_user(user_id):
@@ -61,8 +67,27 @@ def update_user_info(user_id, username, first_name):
         (user_id, username, first_name))
     conn.commit(); conn.close()
 
-# --- КОМАНДЫ ---
+# --- ПРОВЕРКА ПРАВ ---
+async def is_admin(message: types.Message):
+    if message.from_user.id == ADMIN_ID: return True
+    if message.chat.type == "private": return False
+    try:
+        member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+        return isinstance(member, ChatMemberAdministrator) or member.status == "creator"
+    except: return False
 
+# --- ЗАЩИТА ОТ ЗАГЛУШЕННЫХ БОТОВ ---
+@dp.message(lambda message: message.from_user and message.from_user.is_bot)
+async def check_muted_bots(message: types.Message):
+    if message.chat.type == "private": return
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("SELECT 1 FROM muted_bots WHERE chat_id = ? AND bot_id = ?", (message.chat.id, message.from_user.id))
+    if c.fetchone():
+        try: await message.delete()
+        except: pass
+    conn.close()
+
+# --- КОМАНДЫ ---
 @dp.message(Command("start"))
 async def start(message: types.Message):
     get_user(message.from_user.id)
@@ -70,18 +95,17 @@ async def start(message: types.Message):
             f"🎴 Карточка: <b>.карточка</b>\n"
             f"👤 Профиль: /profile\n"
             f"🏆 Топ: /top\n"
-            f"📊 Статистика: /stats")
+            f"📊 Статистика: /stats\n"
+            f"⚙️ Админка: /admin")
     await message.answer(text, parse_mode="HTML")
 
 @dp.message(Command("profile"))
 async def profile(message: types.Message):
     target = message.reply_to_message.from_user if message.reply_to_message else message.from_user
     coins, iris, xp, level, last_card = get_user(target.id)
-    
     needed_xp = level * 5000
     progress = min(int((xp / needed_xp) * 10), 10)
     bar = "█" * progress + "░" * (10 - progress)
-    
     text = (f"👤 <b>ПРОФИЛЬ {target.first_name}</b>\n\n"
             f"🆔 <code>{target.id}</code>\n"
             f"📈 Уровень: <b>{level}</b>\n"
@@ -96,10 +120,7 @@ async def top(message: types.Message):
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
     c.execute("SELECT username, first_name, coins FROM users ORDER BY coins DESC LIMIT 5")
     top_players = c.fetchall(); conn.close()
-    
-    if not top_players:
-        return await message.answer("Пока нет игроков в топе.")
-    
+    if not top_players: return await message.answer("Пока нет игроков в топе.")
     text = "🏆 <b>ТАБЛИЦА ЛИДЕРОВ</b> 🏆\n\n<blockquote>"
     for i, (username, first_name, coins) in enumerate(top_players, 1):
         medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
@@ -112,9 +133,7 @@ async def top(message: types.Message):
 
 @dp.message(Command("stats"))
 async def stats(message: types.Message):
-    if message.chat.type == "private":
-        return await message.reply("Статистика доступна только в группах.")
-    
+    if message.chat.type == "private": return await message.reply("Только в группах.")
     chat_id = message.chat.id
     now = time.time()
     five_hours_ago = now - (5 * 3600)
@@ -125,13 +144,22 @@ async def stats(message: types.Message):
     count_5h = c.fetchone()[0]
     c.execute("SELECT COUNT(*) FROM chat_stats WHERE chat_id = ? AND timestamp > ?", (chat_id, one_day_ago))
     count_24h = c.fetchone()[0]
+    c.execute("SELECT username, COUNT(*) FROM chat_stats WHERE chat_id = ? AND timestamp > ? GROUP BY username ORDER BY COUNT(*) DESC LIMIT 3", (chat_id, five_hours_ago))
+    top_5h = c.fetchall()
+    c.execute("SELECT username, COUNT(*) FROM chat_stats WHERE chat_id = ? AND timestamp > ? GROUP BY username ORDER BY COUNT(*) DESC LIMIT 3", (chat_id, one_day_ago))
+    top_24h = c.fetchall()
     conn.close()
     
-    text = (f"📊 <b>СТАТИСТИКА ЧАТА</b>\n\n"
-            f"<blockquote>"
-            f"🕒 За 5 часов: <b>{count_5h}</b> сообщений\n"
-            f"📅 За 24 часа: <b>{count_24h}</b> сообщений"
-            f"</blockquote>")
+    text = (f"📊 <b>АНАЛИТИКА ЧАТА</b>\n\n"
+            f"<blockquote><b>🕒 За 5 часов:</b> {count_5h} сообщений\n")
+    if top_5h:
+        text += "Топ активных:\n"
+        for u, count in top_5h: text += f"• @{u or 'Аноним'} — {count}\n"
+    text += f"\n<b>📅 За 24 часа:</b> {count_24h} сообщений\n"
+    if top_24h:
+        text += "Топ активных:\n"
+        for u, count in top_24h: text += f"• @{u or 'Аноним'} — {count}\n"
+    text += "</blockquote>"
     await message.reply(text, parse_mode="HTML")
 
 @dp.message(lambda message: message.text and message.text.lower() == ".карточка")
@@ -139,12 +167,9 @@ async def open_card(message: types.Message):
     user_id = message.from_user.id
     coins, iris, xp, level, last_card = get_user(user_id)
     now = time.time()
-    
     if now - last_card < 600:
         left = 600 - (now - last_card)
-        mins = int(left // 60)
-        secs = int(left % 60)
-        return await message.reply(f"⏳ Жди: {mins}м {secs}с.")
+        return await message.reply(f"⏳ Жди: {int(left // 60)}м {int(left % 60)}с.")
     
     msg = await message.reply("🎴 <b>Открываем карточку...</b>", parse_mode="HTML")
     await asyncio.sleep(1)
@@ -166,30 +191,62 @@ async def open_card(message: types.Message):
     c.execute("UPDATE users SET coins = ?, iris = ?, xp = xp + 5, last_card = ? WHERE user_id = ?", 
               (new_coins, new_iris, now, user_id))
     conn.commit(); conn.close()
-    
     await msg.edit_text(f"🎉 <b>Карточка открыта!</b>\n\n<blockquote>{reward}</blockquote>", parse_mode="HTML")
 
-# --- СЧЕТЧИК (В САМОМ КОНЦЕ) ---
+# --- ГЛУШЕНИЕ И РАЗГЛУШЕНИЕ БОТОВ ---
+@dp.message(Command("mute_bot"))
+async def mute_bot(message: types.Message):
+    if not await is_admin(message): return await message.reply("❌ Нет прав.")
+    if not message.reply_to_message or not message.reply_to_message.from_user.is_bot:
+        return await message.reply("❌ Ответь на сообщение бота, которого хочешь заглушить.")
+    target_bot = message.reply_to_message.from_user
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO muted_bots (chat_id, bot_id) VALUES (?, ?)", (message.chat.id, target_bot.id))
+    conn.commit(); conn.close()
+    await message.reply(f"🤐 Бот <b>{target_bot.first_name}</b> в игноре.", parse_mode="HTML")
+
+@dp.message(Command("unmute_bot"))
+async def unmute_bot(message: types.Message):
+    if not await is_admin(message): return await message.reply("❌ Нет прав.")
+    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение бота.")
+    target_bot = message.reply_to_message.from_user
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("DELETE FROM muted_bots WHERE chat_id = ? AND bot_id = ?", (message.chat.id, target_bot.id))
+    conn.commit(); conn.close()
+    await message.reply(f"🔊 Бот <b>{target_bot.first_name}</b> разглушен.", parse_mode="HTML")
+
+# --- АДМИН ПАНЕЛЬ ---
+@dp.message(Command("admin"))
+async def admin_panel(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return await message.reply("❌ Только для создателя.")
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM users"); total_users = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM muted_bots"); total_muted = c.fetchone()[0]
+    conn.close()
+    text = (f"⚙️ <b>АДМИН-ПАНЕЛЬ</b>\n\n"
+            f"<blockquote>👥 Пользователей: <b>{total_users}</b>\n"
+            f"🤐 Заглушено ботов: <b>{total_muted}</b></blockquote>\n\n"
+            f"<b>Управление:</b>\n"
+            f"/mute_bot — заглушить бота (ответом)\n"
+            f"/unmute_bot — разглушить")
+    await message.answer(text, parse_mode="HTML")
+
+# --- СЧЕТЧИК (В КОНЦЕ) ---
 @dp.message(lambda m: m.text and not m.text.startswith("/"))
 async def track_stats(message: types.Message):
-    if message.chat.type == "private" or message.from_user.is_bot:
-        return
-    
+    if message.chat.type == "private" or message.from_user.is_bot: return
     update_user_info(message.from_user.id, message.from_user.username, message.from_user.first_name)
-    
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
-    c.execute("INSERT INTO chat_stats (chat_id, user_id, timestamp) VALUES (?, ?, ?)", 
-              (message.chat.id, message.from_user.id, time.time()))
+    c.execute("INSERT INTO chat_stats (chat_id, user_id, username, timestamp) VALUES (?, ?, ?, ?)", 
+              (message.chat.id, message.from_user.id, message.from_user.username, time.time()))
     conn.commit(); conn.close()
 
 # --- ЗАПУСК ---
 async def main():
     init_db()
     await bot.delete_webhook(drop_pending_updates=True)
-    
     Thread(target=run_flask, daemon=True).start()
     await asyncio.sleep(3)
-    
     print("🚀 Бот запущен!")
     await dp.start_polling(bot, skip_updates=True)
 
