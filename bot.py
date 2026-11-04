@@ -8,8 +8,7 @@ from flask import Flask
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
-# --- ТОКЕН ---
-BOT_TOKEN = "9253824362:AAHXX7SNI9T3cfvqvUsbTqOyXIojHwSNbS0"
+BOT_TOKEN = "9253824362:AAHiqWFF9hoNLn5DyPE_ooGrpXvdzUVBjLc"
 ADMIN_ID = 8907438590 
 
 bot = Bot(BOT_TOKEN)
@@ -52,11 +51,12 @@ def get_user(user_id):
 async def start(message: types.Message):
     get_user(message.from_user.id)
     text = (f"👋 <b>Привет, {message.from_user.first_name}!</b>\n\n"
-            f"🎴 Каждые 10 минут ты можешь открывать карточку командой <b>.карточка</b> и получать монеты или ириски!\n\n"
-            f"👤 /profile — посмотреть профиль")
+            f"🎴 Открывай карточки командой <b>.карточка</b> и получай монеты или ириски!\n"
+            f"👤 /profile — профиль\n"
+            f"🏆 /top — таблица лидеров")
     await message.answer(text, parse_mode="HTML")
 
-# --- .КАРТОЧКА ---
+# --- КАРТОЧКА С АНИМАЦИЕЙ ---
 @dp.message(lambda message: message.text and message.text.lower() == ".карточка")
 async def open_card(message: types.Message):
     user_id = message.from_user.id
@@ -69,6 +69,15 @@ async def open_card(message: types.Message):
         secs = int(left % 60)
         return await message.reply(f"⏳ Ты уже открывал карточку! Жди: {mins}м {secs}с.")
     
+    # Анимация
+    msg = await message.reply("🎴 <b>Открываем карточку...</b>", parse_mode="HTML")
+    await asyncio.sleep(1)
+    await msg.edit_text("🔄 <b>Крутим барабаны...</b>", parse_mode="HTML")
+    await asyncio.sleep(1)
+    await msg.edit_text("✨ <b>Почти готово...</b>", parse_mode="HTML")
+    await asyncio.sleep(1)
+
+    # Результат
     if random.choice([True, False]):
         amount = random.randint(1, 15)
         reward = f"🪙 Тебе выпало <b>{amount}</b> монет!"
@@ -83,7 +92,26 @@ async def open_card(message: types.Message):
               (new_coins, new_iris, now, user_id))
     conn.commit(); conn.close()
     
-    await message.reply(f"🎴 <b>Открываем карточку...</b>\n\n{reward}", parse_mode="HTML")
+    await msg.edit_text(f"🎉 <b>Карточка открыта!</b>\n\n<blockquote>{reward}</blockquote>", parse_mode="HTML")
+
+# --- ТАБЛИЦА ЛИДЕРОВ ---
+@dp.message(Command("top"))
+async def top(message: types.Message):
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("SELECT username, coins FROM users ORDER BY coins DESC LIMIT 5")
+    top_players = c.fetchall(); conn.close()
+    
+    if not top_players:
+        return await message.answer("Пока нет игроков в топе.")
+    
+    text = "🏆 <b>ТАБЛИЦА ЛИДЕРОВ</b> 🏆\n\n<blockquote>"
+    for i, (name, coins) in enumerate(top_players, 1):
+        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+        display_name = name if name else "Аноним"
+        text += f"{medal} {display_name} — <b>{coins}</b> 🪙\n"
+    text += "</blockquote>"
+    
+    await message.answer(text, parse_mode="HTML")
 
 # --- ПРОФИЛЬ ---
 @dp.message(Command("profile"))
