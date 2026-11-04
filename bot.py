@@ -9,7 +9,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
 # --- НАСТРОЙКИ ---
-BOT_TOKEN = "9253824362:AAH8CjRLaM74vR9rgv2ElDLGffj4iW-b-yQ" 
+BOT_TOKEN = "9253824362:AAEJgpxFE-g8021fZjdDQaXb3j4rPQamtBc" 
 ADMIN_ID = 8907438590 
 
 bot = Bot(BOT_TOKEN)
@@ -54,25 +54,15 @@ def get_user(user_id):
     conn.close(); return res
 
 def update_user_info(user_id, username, first_name):
-    conn = sqlite3.connect('bot.db'); c = conn.cursor()
-    c.execute("INSERT INTO users (user_id, username, first_name) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET username = ?, first_name = ?", 
-              (user_id, username, first_name, username, first_name))
+    conn = sqlite3.connect('bot.db')
+    conn.execute(
+        "INSERT INTO users (user_id, username, first_name) VALUES (?,?,?) "
+        "ON CONFLICT(user_id) DO UPDATE SET username=excluded.username, first_name=excluded.first_name",
+        (user_id, username, first_name))
     conn.commit(); conn.close()
 
-# --- СЧЕТЧИК ---
-@dp.message(lambda message: message.text is not None)
-async def track_stats(message: types.Message):
-    if message.chat.type == "private" or message.text.startswith('/'): return
-    if message.from_user.is_bot: return
-    
-    update_user_info(message.from_user.id, message.from_user.username, message.from_user.first_name)
-    
-    conn = sqlite3.connect('bot.db'); c = conn.cursor()
-    c.execute("INSERT INTO chat_stats (chat_id, user_id, timestamp) VALUES (?, ?, ?)", 
-              (message.chat.id, message.from_user.id, time.time()))
-    conn.commit(); conn.close()
+# --- КОМАНДЫ ---
 
-# --- СТАРТ ---
 @dp.message(Command("start"))
 async def start(message: types.Message):
     get_user(message.from_user.id)
@@ -83,7 +73,67 @@ async def start(message: types.Message):
             f"📊 Статистика: /stats")
     await message.answer(text, parse_mode="HTML")
 
-# --- КАРТОЧКА ---
+@dp.message(Command("profile"))
+async def profile(message: types.Message):
+    target = message.reply_to_message.from_user if message.reply_to_message else message.from_user
+    coins, iris, xp, level, last_card = get_user(target.id)
+    
+    needed_xp = level * 5000
+    progress = min(int((xp / needed_xp) * 10), 10)
+    bar = "█" * progress + "░" * (10 - progress)
+    
+    text = (f"👤 <b>ПРОФИЛЬ {target.first_name}</b>\n\n"
+            f"🆔 <code>{target.id}</code>\n"
+            f"📈 Уровень: <b>{level}</b>\n"
+            f"✨ Опыт: <b>{xp}</b> / {needed_xp}\n"
+            f"[{bar}]\n\n"
+            f"🪙 Монеты: <b>{coins}</b>\n"
+            f"🍬 Ириски: <b>{iris}</b>")
+    await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command("top"))
+async def top(message: types.Message):
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("SELECT username, first_name, coins FROM users ORDER BY coins DESC LIMIT 5")
+    top_players = c.fetchall(); conn.close()
+    
+    if not top_players:
+        return await message.answer("Пока нет игроков в топе.")
+    
+    text = "🏆 <b>ТАБЛИЦА ЛИДЕРОВ</b> 🏆\n\n<blockquote>"
+    for i, (username, first_name, coins) in enumerate(top_players, 1):
+        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+        if username: display_name = f"@{username}"
+        elif first_name: display_name = first_name
+        else: display_name = "Игрок"
+        text += f"{medal} {display_name} — <b>{coins}</b> 🪙\n"
+    text += "</blockquote>"
+    await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command("stats"))
+async def stats(message: types.Message):
+    if message.chat.type == "private":
+        return await message.reply("Статистика доступна только в группах.")
+    
+    chat_id = message.chat.id
+    now = time.time()
+    five_hours_ago = now - (5 * 3600)
+    one_day_ago = now - (24 * 3600)
+    
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM chat_stats WHERE chat_id = ? AND timestamp > ?", (chat_id, five_hours_ago))
+    count_5h = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM chat_stats WHERE chat_id = ? AND timestamp > ?", (chat_id, one_day_ago))
+    count_24h = c.fetchone()[0]
+    conn.close()
+    
+    text = (f"📊 <b>СТАТИСТИКА ЧАТА</b>\n\n"
+            f"<blockquote>"
+            f"🕒 За 5 часов: <b>{count_5h}</b> сообщений\n"
+            f"📅 За 24 часа: <b>{count_24h}</b> сообщений"
+            f"</blockquote>")
+    await message.reply(text, parse_mode="HTML")
+
 @dp.message(lambda message: message.text and message.text.lower() == ".карточка")
 async def open_card(message: types.Message):
     user_id = message.from_user.id
@@ -119,69 +169,18 @@ async def open_card(message: types.Message):
     
     await msg.edit_text(f"🎉 <b>Карточка открыта!</b>\n\n<blockquote>{reward}</blockquote>", parse_mode="HTML")
 
-# --- ТОП ---
-@dp.message(Command("top"))
-async def top(message: types.Message):
-    conn = sqlite3.connect('bot.db'); c = conn.cursor()
-    c.execute("SELECT username, first_name, coins FROM users ORDER BY coins DESC LIMIT 5")
-    top_players = c.fetchall(); conn.close()
+# --- СЧЕТЧИК (В САМОМ КОНЦЕ) ---
+@dp.message(lambda m: m.text and not m.text.startswith("/"))
+async def track_stats(message: types.Message):
+    if message.chat.type == "private" or message.from_user.is_bot:
+        return
     
-    if not top_players:
-        return await message.answer("Пока нет игроков в топе.")
-    
-    text = "🏆 <b>ТАБЛИЦА ЛИДЕРОВ</b> 🏆\n\n<blockquote>"
-    for i, (username, first_name, coins) in enumerate(top_players, 1):
-        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-        if username: display_name = f"@{username}"
-        elif first_name: display_name = first_name
-        else: display_name = "Игрок"
-        text += f"{medal} {display_name} — <b>{coins}</b> 🪙\n"
-    text += "</blockquote>"
-    await message.answer(text, parse_mode="HTML")
-
-# --- СТАТИСТИКА ---
-@dp.message(Command("stats"))
-async def stats(message: types.Message):
-    if message.chat.type == "private":
-        return await message.reply("Статистика доступна только в группах.")
-    
-    chat_id = message.chat.id
-    now = time.time()
-    five_hours_ago = now - (5 * 3600)
-    one_day_ago = now - (24 * 3600)
+    update_user_info(message.from_user.id, message.from_user.username, message.from_user.first_name)
     
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM chat_stats WHERE chat_id = ? AND timestamp > ?", (chat_id, five_hours_ago))
-    count_5h = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM chat_stats WHERE chat_id = ? AND timestamp > ?", (chat_id, one_day_ago))
-    count_24h = c.fetchone()[0]
-    conn.close()
-    
-    text = (f"📊 <b>СТАТИСТИКА ЧАТА</b>\n\n"
-            f"<blockquote>"
-            f"🕒 За 5 часов: <b>{count_5h}</b> сообщений\n"
-            f"📅 За 24 часа: <b>{count_24h}</b> сообщений"
-            f"</blockquote>")
-    await message.reply(text, parse_mode="HTML")
-
-# --- ПРОФИЛЬ ---
-@dp.message(Command("profile"))
-async def profile(message: types.Message):
-    target = message.reply_to_message.from_user if message.reply_to_message else message.from_user
-    coins, iris, xp, level, last_card = get_user(target.id)
-    
-    needed_xp = level * 5000
-    progress = min(int((xp / needed_xp) * 10), 10)
-    bar = "█" * progress + "░" * (10 - progress)
-    
-    text = (f"👤 <b>ПРОФИЛЬ {target.first_name}</b>\n\n"
-            f"🆔 <code>{target.id}</code>\n"
-            f"📈 Уровень: <b>{level}</b>\n"
-            f"✨ Опыт: <b>{xp}</b> / {needed_xp}\n"
-            f"[{bar}]\n\n"
-            f"🪙 Монеты: <b>{coins}</b>\n"
-            f"🍬 Ириски: <b>{iris}</b>")
-    await message.answer(text, parse_mode="HTML")
+    c.execute("INSERT INTO chat_stats (chat_id, user_id, timestamp) VALUES (?, ?, ?)", 
+              (message.chat.id, message.from_user.id, time.time()))
+    conn.commit(); conn.close()
 
 # --- ЗАПУСК ---
 async def main():
