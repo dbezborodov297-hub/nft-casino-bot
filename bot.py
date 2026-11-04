@@ -7,17 +7,14 @@ from threading import Thread
 from flask import Flask
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import ChatPermissions, ChatMemberAdministrator
+from aiogram.types import ChatPermissions
 
 # --- НАСТРОЙКИ ---
-BOT_TOKEN = "9253824362:AAHj9jP71TY95U6zaiHrYM0QYfl5aPbQYN0"
+BOT_TOKEN = "9209660223:AAG94hAlU6rv76KHxWzoB1jgU6e76P4zfHw"
 ADMIN_ID = 8907438590 
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
-
-# Хранилище активных дуэлей
-active_duels = {}
 
 # --- ФЛАСК ---
 app = Flask(__name__)
@@ -67,13 +64,9 @@ def update_user_info(user_id, username, first_name):
         (user_id, username, first_name))
     conn.commit(); conn.close()
 
+# --- ПРОВЕРКА (ТОЛЬКО ДЛЯ ТЕБЯ) ---
 async def is_admin(message: types.Message):
-    if message.from_user.id == ADMIN_ID: return True
-    if message.chat.type == "private": return False
-    try:
-        member = await bot.get_chat_member(message.chat.id, message.from_user.id)
-        return isinstance(member, ChatMemberAdministrator) or member.status == "creator"
-    except: return False
+    return message.from_user.id == ADMIN_ID
 
 # --- ГЛУШИЛКА БОТОВ ---
 @dp.message(lambda message: message.from_user and message.from_user.is_bot)
@@ -112,6 +105,63 @@ async def unmute_all_bots(message: types.Message):
     c.execute("DELETE FROM muted_bots WHERE chat_id = ? AND bot_id = 0", (message.chat.id,))
     conn.commit(); conn.close()
     await message.reply("🔊 Все боты разглушены.")
+
+# --- МУТЫ И БАНЫ ДЛЯ ЛЮДЕЙ ---
+@dp.message(Command("mute"))
+async def mute_user(message: types.Message):
+    if not await is_admin(message): return await message.reply("❌ Нет прав.")
+    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение нарушителя.")
+    try:
+        await bot.restrict_chat_member(
+            message.chat.id, 
+            message.reply_to_message.from_user.id, 
+            ChatPermissions(can_send_messages=False),
+            until_date=int(time.time()) + 3600
+        )
+        await message.reply(f"🤐 {message.reply_to_message.from_user.first_name} замучен на 1 час.")
+    except Exception as e: await message.reply(f"Ошибка: {e}")
+
+@dp.message(Command("unmute"))
+async def unmute_user(message: types.Message):
+    if not await is_admin(message): return await message.reply("❌ Нет прав.")
+    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение.")
+    try:
+        await bot.restrict_chat_member(
+            message.chat.id, 
+            message.reply_to_message.from_user.id, 
+            ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True)
+        )
+        await message.reply(f"🔊 {message.reply_to_message.from_user.first_name} размучен.")
+    except Exception as e: await message.reply(f"Ошибка: {e}")
+
+@dp.message(Command("ban"))
+async def ban_user(message: types.Message):
+    if not await is_admin(message): return await message.reply("❌ Нет прав.")
+    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение нарушителя.")
+    try:
+        await bot.ban_chat_member(message.chat.id, message.reply_to_message.from_user.id)
+        await message.reply(f"🔨 {message.reply_to_message.from_user.first_name} забанен.")
+    except Exception as e: await message.reply(f"Ошибка: {e}")
+
+@dp.message(Command("kick"))
+async def kick_user(message: types.Message):
+    if not await is_admin(message): return await message.reply("❌ Нет прав.")
+    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение нарушителя.")
+    try:
+        await bot.ban_chat_member(message.chat.id, message.reply_to_message.from_user.id)
+        await bot.unban_chat_member(message.chat.id, message.reply_to_message.from_user.id)
+        await message.reply(f"👢 {message.reply_to_message.from_user.first_name} кикнут.")
+    except Exception as e: await message.reply(f"Ошибка: {e}")
+
+@dp.message(Command("unban"))
+async def unban_user(message: types.Message):
+    if not await is_admin(message): return await message.reply("❌ Нет прав.")
+    args = message.text.split()
+    if len(args) < 2: return await message.reply("❌ Введи ID: /unban 123456789")
+    try:
+        await bot.unban_chat_member(message.chat.id, int(args[1]))
+        await message.reply(f"🔓 Пользователь {args[1]} разбанен.")
+    except Exception as e: await message.reply(f"Ошибка: {e}")
 
 # --- УПРАВЛЕНИЕ ЧАТОМ ---
 @dp.message(Command("close_chat"))
@@ -162,11 +212,10 @@ async def clan_info(message: types.Message):
     members_list = members.split(",")
     await message.reply(f"🛡 <b>Клан {args[1]}</b>\n👑 Лидер: <code>{owner}</code>\n👥 Участников: {len(members_list)}", parse_mode="HTML")
 
-# --- ДУЭЛИ (ТЕКСТОВЫЕ) ---
+# --- ДУЭЛИ ---
 @dp.message(Command("duel"))
 async def duel_start(message: types.Message):
     if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение соперника.")
-    
     opponent = message.reply_to_message.from_user
     if opponent.id == message.from_user.id: return await message.reply("❌ Нельзя играть с собой.")
     
@@ -190,23 +239,11 @@ async def start(message: types.Message):
             f"🏆 /top\n"
             f"📊 /stats\n"
             f"🛡 /clan_create [Название]\n"
-            f"⚔️ /duel (ответом на сообщение)")
-    await message.answer(text, parse_mode="HTML")
-
-@dp.message(Command("admin"))
-async def admin_panel(message: types.Message):
-    if message.from_user.id != ADMIN_ID: return await message.reply("❌ Только для создателя.")
-    text = (f"⚙️ <b>АДМИН-ПАНЕЛЬ</b>\n\n"
-            f"<b>Боты:</b>\n"
-            f"/mute_bot — заглушить бота (ответом)\n"
-            f"/mute_all_bots — заглушить всех ботов\n"
-            f"/unmute_all_bots — разглушить всех\n\n"
-            f"<b>Чат:</b>\n"
-            f"/close_chat — закрыть чат\n"
-            f"/open_chat — открыть чат\n\n"
-            f"<b>Кланы:</b>\n"
-            f"/clan_create [Название]\n"
-            f"/clan_info [Название]")
+            f"⚔️ /duel\n\n"
+            f"<b>Модерация (только для тебя):</b>\n"
+            f"/mute, /unmute, /ban, /kick, /unban\n"
+            f"/mute_bot, /mute_all_bots, /unmute_all_bots\n"
+            f"/close_chat, /open_chat")
     await message.answer(text, parse_mode="HTML")
 
 # --- СЧЕТЧИК (В КОНЦЕ) ---
