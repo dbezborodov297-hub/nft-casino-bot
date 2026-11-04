@@ -7,11 +7,10 @@ from threading import Thread
 from flask import Flask
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import ChatPermissions, ChatMemberAdministrator, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import ChatPermissions, ChatMemberAdministrator
 
 # --- НАСТРОЙКИ ---
-BOT_TOKEN = "9253824362:AAHBagHx7GURwpe371KLaj2QxMKNURDTjtk"
+BOT_TOKEN = "9253824362:AAHj9jP71TY95U6zaiHrYM0QYfl5aPbQYN0"
 ADMIN_ID = 8907438590 
 
 bot = Bot(BOT_TOKEN)
@@ -81,7 +80,6 @@ async def is_admin(message: types.Message):
 async def check_muted_bots(message: types.Message):
     if message.chat.type == "private": return
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
-    # Проверка на конкретного бота ИЛИ на всех ботов (bot_id = 0)
     c.execute("SELECT 1 FROM muted_bots WHERE chat_id = ? AND (bot_id = ? OR bot_id = 0)", (message.chat.id, message.from_user.id))
     if c.fetchone():
         try: await message.delete()
@@ -105,7 +103,7 @@ async def mute_all_bots(message: types.Message):
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
     c.execute("INSERT OR IGNORE INTO muted_bots (chat_id, bot_id) VALUES (?, 0)", (message.chat.id,))
     conn.commit(); conn.close()
-    await message.reply("🤐 Все боты в этом чате заглушены (кроме меня!).")
+    await message.reply("🤐 Все боты в этом чате заглушены.")
 
 @dp.message(Command("unmute_all_bots"))
 async def unmute_all_bots(message: types.Message):
@@ -121,7 +119,7 @@ async def close_chat(message: types.Message):
     if not await is_admin(message): return await message.reply("❌ Нет прав.")
     try:
         await bot.set_chat_permissions(message.chat.id, ChatPermissions(can_send_messages=False))
-        await message.reply("🔒 Чат закрыт. Никто не может писать.")
+        await message.reply("🔒 Чат закрыт.")
     except Exception as e: await message.reply(f"Ошибка: {e}")
 
 @dp.message(Command("open_chat"))
@@ -129,7 +127,7 @@ async def open_chat(message: types.Message):
     if not await is_admin(message): return await message.reply("❌ Нет прав.")
     try:
         await bot.set_chat_permissions(message.chat.id, ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True))
-        await message.reply("🔓 Чат открыт. Можно писать.")
+        await message.reply("🔓 Чат открыт.")
     except Exception as e: await message.reply(f"Ошибка: {e}")
 
 # --- КЛАНЫ ---
@@ -164,7 +162,7 @@ async def clan_info(message: types.Message):
     members_list = members.split(",")
     await message.reply(f"🛡 <b>Клан {args[1]}</b>\n👑 Лидер: <code>{owner}</code>\n👥 Участников: {len(members_list)}", parse_mode="HTML")
 
-# --- ДУЭЛИ ---
+# --- ДУЭЛИ (ТЕКСТОВЫЕ) ---
 @dp.message(Command("duel"))
 async def duel_start(message: types.Message):
     if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение соперника.")
@@ -172,100 +170,44 @@ async def duel_start(message: types.Message):
     opponent = message.reply_to_message.from_user
     if opponent.id == message.from_user.id: return await message.reply("❌ Нельзя играть с собой.")
     
-    await message.reply(f"⚔️ <b>Дуэль!</b>\n\n{message.from_user.first_name} вызывает {opponent.first_name} в крестики-нолики.\n\nВведи ставку (монеты):")
-    await asyncio.sleep(1)
     bet = 100 
-    coins, _, _ = get_user(message.from_user.id)
-    if coins < bet: return await message.reply("❌ У тебя недостаточно монет для ставки.")
+    coins, _, _, _, _ = get_user(message.from_user.id)
+    if coins < bet: return await message.reply("❌ У тебя недостаточно монет для ставки 100.")
     
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="✅ Принять", callback_data=f"duel_accept_{message.from_user.id}_{opponent.id}_{bet}"),
-        InlineKeyboardButton(text="❌ Отклонить", callback_data="duel_decline")
-    )
-    
-    try:
-        await bot.send_message(opponent.id, f"⚔️ {message.from_user.first_name} вызывает тебя на дуэль!\nСтавка: {bet} монет.", reply_markup=builder.as_markup())
-        await message.reply("✅ Вызов отправлен в ЛС сопернику.")
-    except:
-        await message.reply("❌ Не удалось отправить в ЛС. Соперник должен сначала нажать /start у бота.")
+    await message.reply(f"⚔️ {message.from_user.first_name} вызывает {opponent.first_name} в крестики-нолики на {bet} монет!\n\n{opponent.first_name}, напиши /accept_duel чтобы принять.")
 
-@dp.callback_query(lambda c: c.data.startswith("duel_accept_"))
-async def duel_accept(callback: types.CallbackQuery):
-    _, _, p1, p2, bet = callback.data.split("_")
-    p1, p2, bet = int(p1), int(p2), int(bet)
-    
-    board = "_________"
-    active_duels[f"{p1}_{p2}"] = {"board": board, "p1": p1, "p2": p2, "turn": p1, "bet": bet}
-    
-    await callback.message.edit_text("✅ Дуэль принята! Игра началась в чате.")
-    await bot.send_message(p1, f"⚔️ Дуэль началась! Твой ход (❌):\nИграй в чате.", reply_markup=create_board(p1, p2, board))
-
-def create_board(p1, p2, board):
-    builder = InlineKeyboardBuilder()
-    for i in range(9):
-        text = board[i] if board[i] != "_" else "⬜"
-        builder.button(text=text, callback_data=f"duel_move_{p1}_{p2}_{i}")
-    builder.adjust(3)
-    return builder.as_markup()
-
-@dp.callback_query(lambda c: c.data.startswith("duel_move_"))
-async def duel_move(callback: types.CallbackQuery):
-    _, _, p1, p2, idx = callback.data.split("_")
-    p1, p2, idx = int(p1), int(p2), int(idx)
-    key = f"{p1}_{p2}"
-    
-    if key not in active_duels: return await callback.answer("Игра окончена.")
-    game = active_duels[key]
-    
-    if callback.from_user.id != game["turn"]: return await callback.answer("❌ Не твой ход!")
-    if game["board"][idx] != "_": return await callback.answer("❌ Занято!")
-    
-    symbol = "❌" if callback.from_user.id == p1 else "⭕"
-    new_board = list(game["board"])
-    new_board[idx] = symbol
-    game["board"] = "".join(new_board)
-    game["turn"] = p2 if game["turn"] == p1 else p1
-    
-    win_lines = [(0,1,2), (3,4,5), (6,7,8), (0,3,6), (1,4,7), (2,5,8), (0,4,8), (2,4,6)]
-    winner = None
-    for a,b,c_i in win_lines:
-        if game["board"][a] == game["board"][b] == game["board"][c_i] != "_":
-            winner = game["board"][a]
-            break
-            
-    if winner:
-        winner_id = p1 if winner == "❌" else p2
-        conn = sqlite3.connect('bot.db'); c = conn.cursor()
-        c.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (game["bet"], winner_id))
-        c.execute("UPDATE users SET coins = coins - ? WHERE user_id = ?", (game["bet"], p1 if winner_id == p2 else p2))
-        conn.commit(); conn.close()
-        
-        await callback.message.edit_text(f"🏆 Победа! {winner} выиграл {game['bet']} монет.")
-        del active_duels[key]
-    elif "_" not in game["board"]:
-        await callback.message.edit_text("🤝 Ничья!")
-        del active_duels[key]
-    else:
-        await callback.message.edit_reply_markup(reply_markup=create_board(p1, p2, game["board"]))
-        await callback.answer("Ход сделан. Передай ход сопернику.")
-
-@dp.callback_query(lambda c: c.data == "duel_decline")
-async def duel_decline(callback: types.CallbackQuery):
-    await callback.message.edit_text("❌ Дуэль отклонена.")
+@dp.message(Command("accept_duel"))
+async def duel_accept(message: types.Message):
+    await message.reply("✅ Дуэль принята! Игра начинается.\nДоска:\n1 2 3\n4 5 6\n7 8 9\n\nХоди цифрой от 1 до 9.")
 
 # --- СТАРТ И ПРОФИЛЬ ---
 @dp.message(Command("start"))
 async def start(message: types.Message):
     get_user(message.from_user.id)
-    await message.answer("👋 Привет! Пиши /admin для админ-панели, /clan_create для клана.")
+    text = (f"👋 <b>Привет, {message.from_user.first_name}!</b>\n\n"
+            f"🎴 .карточка\n"
+            f"👤 /profile\n"
+            f"🏆 /top\n"
+            f"📊 /stats\n"
+            f"🛡 /clan_create [Название]\n"
+            f"⚔️ /duel (ответом на сообщение)")
+    await message.answer(text, parse_mode="HTML")
 
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
-    if message.from_user.id != ADMIN_ID: return
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="📊 Стата", callback_data="admin_stats"))
-    await message.answer("⚙️ Админка (тест).", reply_markup=builder.as_markup())
+    if message.from_user.id != ADMIN_ID: return await message.reply("❌ Только для создателя.")
+    text = (f"⚙️ <b>АДМИН-ПАНЕЛЬ</b>\n\n"
+            f"<b>Боты:</b>\n"
+            f"/mute_bot — заглушить бота (ответом)\n"
+            f"/mute_all_bots — заглушить всех ботов\n"
+            f"/unmute_all_bots — разглушить всех\n\n"
+            f"<b>Чат:</b>\n"
+            f"/close_chat — закрыть чат\n"
+            f"/open_chat — открыть чат\n\n"
+            f"<b>Кланы:</b>\n"
+            f"/clan_create [Название]\n"
+            f"/clan_info [Название]")
+    await message.answer(text, parse_mode="HTML")
 
 # --- СЧЕТЧИК (В КОНЦЕ) ---
 @dp.message(lambda m: m.text and not m.text.startswith("/"))
