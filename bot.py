@@ -9,7 +9,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
 # --- ТОКЕН ---
-BOT_TOKEN = "9253824362:AAGY636HxvCikSuNPgBh0vHiUF83xvkq_kY"
+BOT_TOKEN = "9253824362:AAFCSkUmMbcvaO0GJjcE_i01iOd221Pr5IM"
 ADMIN_ID = 8907438590 
 
 bot = Bot(BOT_TOKEN)
@@ -59,10 +59,10 @@ def update_user_info(user_id, username, first_name):
               (user_id, username, first_name, username, first_name))
     conn.commit(); conn.close()
 
-# --- СЧЕТЧИК СТАТИСТИКИ ---
-@dp.message()
+# --- СЧЕТЧИК СТАТИСТИКИ (ЗАЩИТА ОТ СТИКЕРОВ) ---
+@dp.message(lambda message: message.text is not None)
 async def track_stats(message: types.Message):
-    if message.chat.type == "private" or not message.text or message.text.startswith('/'): return
+    if message.chat.type == "private" or message.text.startswith('/'): return
     if message.from_user.is_bot: return
     
     update_user_info(message.from_user.id, message.from_user.username, message.from_user.first_name)
@@ -77,7 +77,7 @@ async def track_stats(message: types.Message):
 async def start(message: types.Message):
     get_user(message.from_user.id)
     text = (f"👋 <b>Привет, {message.from_user.first_name}!</b>\n\n"
-            f"🎴 Открывай карточки: <b>.карточка</b>\n"
+            f"🎴 Карточка: <b>.карточка</b>\n"
             f"👤 Профиль: /profile\n"
             f"🏆 Топ: /top\n"
             f"📊 Статистика: /stats")
@@ -96,7 +96,6 @@ async def open_card(message: types.Message):
         secs = int(left % 60)
         return await message.reply(f"⏳ Жди: {mins}м {secs}с.")
     
-    # Анимация
     msg = await message.reply("🎴 <b>Открываем карточку...</b>", parse_mode="HTML")
     await asyncio.sleep(1)
     await msg.edit_text("🔄 <b>Крутим барабаны...</b>", parse_mode="HTML")
@@ -133,19 +132,15 @@ async def top(message: types.Message):
     text = "🏆 <b>ТАБЛИЦА ЛИДЕРОВ</b> 🏆\n\n<blockquote>"
     for i, (username, first_name, coins) in enumerate(top_players, 1):
         medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-        if username:
-            display_name = f"@{username}"
-        elif first_name:
-            display_name = first_name
-        else:
-            display_name = "Игрок"
-            
+        if username: display_name = f"@{username}"
+        elif first_name: display_name = first_name
+        else: display_name = "Игрок"
         text += f"{medal} {display_name} — <b>{coins}</b> 🪙\n"
     text += "</blockquote>"
     
     await message.answer(text, parse_mode="HTML")
 
-# --- СТАТИСТИКА ЧАТА ---
+# --- СТАТИСТИКА ---
 @dp.message(Command("stats"))
 async def stats(message: types.Message):
     if message.chat.type == "private":
