@@ -11,7 +11,7 @@ from aiogram.types import ChatPermissions, InlineKeyboardMarkup, InlineKeyboardB
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # --- НАСТРОЙКИ ---
-BOT_TOKEN = "9209660223:AAGILT1ZhbYgfO7uU8iAbw-flqxW9UIbYNU"
+BOT_TOKEN = "9209660223:AAG6OlnhpCMufMUbQ633ANUEM8DVxAByvA4"
 ADMIN_ID = 8907438590 
 
 bot = Bot(BOT_TOKEN)
@@ -65,7 +65,6 @@ def init_db():
     
     for name, data in BASE_SHOP_ITEMS.items():
         c.execute("INSERT OR IGNORE INTO shop_sold (item_name, sold_count) VALUES (?, 0)", (name,))
-        # Принудительно обновляем цену и имя, если поменяли в коде
         c.execute("INSERT OR REPLACE INTO prices (item_name, current_price) VALUES (?, ?)", (name, data["base_price"]))
         SHOP_ITEMS[name] = {"price": data["base_price"], "limit": data["limit"], "bonus": data["bonus"], "base_price": data["base_price"]}
     conn.commit(); conn.close()
@@ -119,7 +118,7 @@ async def is_admin(message: types.Message):
     if message.from_user.id == ADMIN_ID: return True
     return get_user(message.from_user.id)[6] == 1
 
-# --- МЕХАНИКА РЫНКА (ПЛАВНАЯ) ---
+# --- МЕХАНИКА РЫНКА ---
 async def market_fluctuation():
     await asyncio.sleep(10)
     while True:
@@ -137,6 +136,19 @@ async def market_fluctuation():
             conn = sqlite3.connect('bot.db'); c = conn.cursor()
             c.execute("UPDATE prices SET current_price = ? WHERE item_name = ?", (new_price, item_name))
             conn.commit(); conn.close()
+
+# --- РАССЫЛКА НОВОСТЕЙ ВСЕМ ---
+async def broadcast_news(text):
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("SELECT user_id FROM users")
+    users = c.fetchall(); conn.close()
+    
+    for (uid,) in users:
+        try:
+            await bot.send_message(uid, text, parse_mode="HTML")
+            await asyncio.sleep(0.05) # Пауза, чтобы не забанили
+        except:
+            pass
 
 # --- ИНСТРУКЦИЯ ---
 @dp.message(Command("help"))
@@ -315,7 +327,6 @@ async def buy_nft_callback(callback: types.CallbackQuery):
     c.execute("INSERT INTO inventory (user_id, item_name) VALUES (?, ?)", (callback.from_user.id, item_name))
     c.execute("UPDATE shop_sold SET sold_count = sold_count + 1 WHERE item_name = ?", (item_name,))
     
-    # Плавный рост цены (2%)
     if random.random() < 0.3:
         new_price = int(data["price"] * 1.02)
         data["price"] = new_price
@@ -323,9 +334,9 @@ async def buy_nft_callback(callback: types.CallbackQuery):
     
     conn.commit(); conn.close()
     
+    # РАССЫЛКА ВСЕМ ПОЛЬЗОВАТЕЛЯМ БОТА
     news = f"📰 <b>НОВОСТЬ!</b> Игрок {callback.from_user.first_name} скупил <b>{item_name}</b> за {data['price']} монет!"
-    try: await callback.message.answer(news, parse_mode="HTML")
-    except: pass
+    await broadcast_news(news)
     
     await callback.answer(f"✅ Ты купил {item_name}!", show_alert=True)
 
@@ -346,7 +357,6 @@ async def inventory(message: types.Message):
 async def sell_item(message: types.Message):
     args = message.text.split(maxsplit=2)
     if len(args) < 3: return await message.reply("❌ /sell Rocket 20")
-    # Ищем предмет по частичному совпадению
     search_name = args[1].lower()
     item_name = next((k for k in SHOP_ITEMS.keys() if search_name in k.lower()), None)
     if not item_name: return await message.reply("❌ Нет такого.")
