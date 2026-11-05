@@ -10,7 +10,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import ChatPermissions, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-BOT_TOKEN = "9209660223:AAEujT4tINMURa5WqBSBgCuuGLLK_5osHqY"
+BOT_TOKEN = "9209660223:AAF7s7TxgSgY1DJRxf6tKQgg6-n__qfe0Ag"
 ADMIN_ID = 8907438590
 EVENT_DAYS = 15
 EVENT_PRIZE = 500
@@ -42,7 +42,7 @@ def run_flask():
 def init_db():
     conn = sqlite3.connect('bot.db')
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, coins INTEGER DEFAULT 0, iris INTEGER DEFAULT 0, xp INTEGER DEFAULT 0, level INTEGER DEFAULT 1, last_card REAL DEFAULT 0, last_daily REAL DEFAULT 0, is_admin INTEGER DEFAULT 0, referrer_id INTEGER DEFAULT NULL, event_points INTEGER DEFAULT 0)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, coins INTEGER DEFAULT 0, iris INTEGER DEFAULT 0, xp INTEGER DEFAULT 0, level INTEGER DEFAULT 1, last_card REAL DEFAULT 0, last_daily REAL DEFAULT 0, is_admin INTEGER DEFAULT 0, referrer_id INTEGER DEFAULT NULL, event_points INTEGER DEFAULT 0, ref_earned INTEGER DEFAULT 0)''')
     c.execute('''CREATE TABLE IF NOT EXISTS inventory (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, item_name TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS shop_sold (item_name TEXT PRIMARY KEY, sold_count INTEGER DEFAULT 0)''')
     c.execute('''CREATE TABLE IF NOT EXISTS market (id INTEGER PRIMARY KEY AUTOINCREMENT, seller_id INTEGER, item_name TEXT, price INTEGER, status TEXT DEFAULT 'active')''')
@@ -73,11 +73,11 @@ def load_prices():
 
 def get_user(uid):
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
-    c.execute("SELECT coins, iris, xp, level, last_card, last_daily, is_admin, referrer_id, event_points FROM users WHERE user_id = ?", (uid,))
+    c.execute("SELECT coins, iris, xp, level, last_card, last_daily, is_admin, referrer_id, event_points, ref_earned FROM users WHERE user_id = ?", (uid,))
     res = c.fetchone()
     if not res:
         c.execute("INSERT INTO users (user_id) VALUES (?)", (uid,))
-        conn.commit(); res = (0, 0, 0, 1, 0, 0, 0, None, 0)
+        conn.commit(); res = (0, 0, 0, 1, 0, 0, 0, None, 0, 0)
     conn.close(); return res
 
 def add_event(uid, coins):
@@ -166,7 +166,7 @@ async def start(message: types.Message, command: CommandObject):
             res = c.fetchone()
             if res and res[0] is None:
                 c.execute("UPDATE users SET referrer_id = ? WHERE user_id = ?", (ref, user_id))
-                c.execute("UPDATE users SET coins = coins + 3 WHERE user_id = ?", (ref,))
+                c.execute("UPDATE users SET coins = coins + 3, ref_earned = ref_earned + 3 WHERE user_id = ?", (ref,))
                 conn.commit()
                 try: await bot.send_message(ref, "🎉 Новый реферал! +3 монеты.")
                 except: pass
@@ -175,20 +175,76 @@ async def start(message: types.Message, command: CommandObject):
 
 @dp.message(Command("help"))
 async def help_cmd(message: types.Message):
-    text = (f"📖 <b>ИНСТРУКЦИЯ</b>\n\n<b>🎮 Игры:</b>\n• <b>.карточка</b> — открыть (5 мин)\n• <b>/roulette [красное/зеленое] [ставка]</b>\n• <b>/daily</b> — бонус (+30)\n• <b>/duel</b> — дуэль (ответом)\n\n<b>👤 Экономика:</b>\n• <b>/profile</b> — профиль\n• <b>/top</b> — топ монет\n• <b>/top_iris</b> — топ ирисок\n• <b>/shop</b> — магазин (кнопки)\n• <b>/inventory</b> — NFT\n• <b>/exchange [сумма]</b> — ириски на монеты (2:1)\n• <b>/ref</b> — рефералка\n\n<b>🏆 Ивент:</b>\n• <b>/event</b> — таблица ивента\n\n<b>🏪 Рынок:</b>\n• <b>/sell [Название] [Цена]</b>\n• <b>/market</b>\n• <b>/buy [ID]</b>\n\n<b>🛡 Кланы:</b>\n• <b>/clan_create [Название]</b>\n• <b>/clan_info [Название]</b>\n\n<b>📊 Аналитика:</b>\n• <b>/stats</b>\n\n<b>🔨 Модерация:</b>\n• <b>/mute</b>, <b>/unmute</b>, <b>/ban</b>, <b>/kick</b>, <b>/unban</b>\n• <b>/clear [число]</b>\n• <b>/close_chat</b>, <b>/open_chat</b>\n• <b>/mute_bot</b>, <b>/mute_all_bots</b>, <b>/unmute_all_bots</b>\n\n<b>👑 Админы:</b>\n• <b>/add_admin [ID]</b>, <b>/remove_admin [ID]</b>, <b>/admin_list</b>")
+    text = (f"📖 <b>ИНСТРУКЦИЯ</b>\n\n<b>🎮 Игры:</b>\n• <b>.карточка</b> — открыть (5 мин)\n• <b>/roulette [ставка]</b> — рулетка с NFT\n• <b>/daily</b> — бонус (+30)\n\n<b>👤 Экономика:</b>\n• <b>/profile</b> — профиль\n• <b>/top</b> — топ монет\n• <b>/top_iris</b> — топ ирисок\n• <b>/shop</b> — магазин (кнопки)\n• <b>/inventory</b> — NFT\n• <b>/exchange [сумма]</b> — ириски на монеты (2:1)\n• <b>/ref</b> — рефералка\n\n<b>🏆 Ивент:</b>\n• <b>/event</b> — таблица ивента\n\n<b>🏪 Рынок:</b>\n• <b>/sell [Название] [Цена]</b>\n• <b>/market</b>\n• <b>/buy [ID]</b>\n\n<b>🛡 Кланы:</b>\n• <b>/clan_create [Название]</b>\n• <b>/clan_info [Название]</b>\n\n<b>📊 Аналитика:</b>\n• <b>/stats</b> — полный отчет\n\n<b>🔨 Модерация:</b>\n• <b>/mute</b>, <b>/unmute</b>, <b>/ban</b>, <b>/kick</b>, <b>/unban</b>\n• <b>/clear [число]</b>\n• <b>/close_chat</b>, <b>/open_chat</b>\n• <b>/mute_bot</b>, <b>/mute_all_bots</b>, <b>/unmute_all_bots</b>\n\n<b>👑 Админы:</b>\n• <b>/add_admin [ID]</b>, <b>/remove_admin [ID]</b>, <b>/admin_list</b>")
     await message.answer(text, parse_mode="HTML")
 
 @dp.message(Command("profile"))
 async def profile(message: types.Message):
     target = message.reply_to_message.from_user if message.reply_to_message else message.from_user
-    coins, iris, xp, level, _, _, is_admin, _, event_points = get_user(target.id)
+    coins, iris, xp, level, _, _, is_admin, _, event_points, ref_earned = get_user(target.id)
     rank = get_rank(coins)
     bonus = get_bonus(target.id)
     needed_xp = level * 5000
     bar = "█" * min(int((xp / needed_xp) * 10), 10) + "░" * (10 - min(int((xp / needed_xp) * 10), 10))
     status = "👑 Админ" if is_admin else "👤 Игрок"
-    text = (f"👤 <b>ПРОФИЛЬ {target.first_name}</b>\n\n🆔 <code>{target.id}</code>\n🛡 {status}\n🏅 Ранг: <b>{rank}</b>\n📈 Ур: <b>{level}</b> [{bar}] ({xp}/{needed_xp})\n\n🪙 Монеты: <b>{coins}</b>\n🍬 Ириски: <b>{iris}</b>\n🎁 Бонус: <b>+{bonus:.1f}%</b>\n🏆 Очки ивента: <b>{event_points}</b>\n\n💡 <i>Совет: .карточка — доход.</i>")
+    text = (f"👤 <b>ПРОФИЛЬ {target.first_name}</b>\n\n🆔 <code>{target.id}</code>\n🛡 {status}\n🏅 Ранг: <b>{rank}</b>\n📈 Ур: <b>{level}</b> [{bar}] ({xp}/{needed_xp})\n\n🪙 Монеты: <b>{coins}</b>\n🍬 Ириски: <b>{iris}</b>\n🎁 Бонус: <b>+{bonus:.1f}%</b>\n🏆 Очки ивента: <b>{event_points}</b>\n👥 Рефералов: <b>{ref_earned // 3}</b>\n\n💡 <i>Совет: .карточка — доход.</i>")
     await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command("ref"))
+async def ref_cabinet(message: types.Message):
+    user_id = message.from_user.id
+    coins, iris, xp, level, _, _, _, _, _, ref_earned = get_user(user_id)
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("SELECT username, first_name FROM users WHERE referrer_id = ?", (user_id,))
+    refs = c.fetchall(); conn.close()
+    ref_link = f"https://t.me/{(await bot.get_me()).username}?start={user_id}"
+    text = (f"👥 <b>РЕФЕРАЛЬНЫЙ КАБИНЕТ</b>\n\n🔗 Твоя ссылка:\n<code>{ref_link}</code>\n\n👤 Приглашено друзей: <b>{len(refs)}</b>\n🪙 Заработано на рефералах: <b>{ref_earned}</b> монет\n🎁 За каждого друга: <b>+3 монеты</b>\n\n")
+    if refs:
+        text += "<b>Твои рефералы:</b>\n"
+        for i, (uname, fname) in enumerate(refs[:10], 1):
+            name = f"@{uname}" if uname else fname
+            text += f"{i}. {name}\n"
+        if len(refs) > 10:
+            text += f"... и еще {len(refs) - 10}\n"
+    else:
+        text += "Пока никого нет. Поделись ссылкой!"
+    await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command("stats"))
+async def stats(message: types.Message):
+    if message.chat.type == "private": return await message.reply("Только в группах.")
+    chat_id = message.chat.id
+    now = time.time()
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM chat_stats WHERE chat_id = ?", (chat_id,))
+    total = c.fetchone()[0]
+    c.execute("SELECT username, COUNT(*) FROM chat_stats WHERE chat_id = ? GROUP BY username ORDER BY COUNT(*) DESC LIMIT 10", (chat_id,))
+    top_all = c.fetchall()
+    c.execute("SELECT username, COUNT(*) FROM chat_stats WHERE chat_id = ? AND timestamp > ? GROUP BY username ORDER BY COUNT(*) DESC LIMIT 5", (chat_id, now - 86400))
+    top_24 = c.fetchall()
+    c.execute("SELECT username, COUNT(*) FROM chat_stats WHERE chat_id = ? AND timestamp > ? GROUP BY username ORDER BY COUNT(*) DESC LIMIT 5", (chat_id, now - 18000))
+    top_5 = c.fetchall()
+    conn.close()
+    text = f"📊 <b>АНАЛИТИКА ЧАТА</b>\n\n<blockquote>💬 Всего сообщений: {total}</blockquote>\n"
+    if top_all:
+        text += "<b>🏆 Топ-10 за всё время:</b>\n<blockquote>"
+        for i, (uname, cnt) in enumerate(top_all, 1):
+            name = f"@{uname}" if uname else "Аноним"
+            text += f"{i}. {name} — {cnt}\n"
+        text += "</blockquote>\n"
+    if top_24:
+        text += "<b>📅 Топ-5 за 24 часа:</b>\n<blockquote>"
+        for i, (uname, cnt) in enumerate(top_24, 1):
+            name = f"@{uname}" if uname else "Аноним"
+            text += f"{i}. {name} — {cnt}\n"
+        text += "</blockquote>\n"
+    if top_5:
+        text += "<b>🕒 Топ-5 за 5 часов:</b>\n<blockquote>"
+        for i, (uname, cnt) in enumerate(top_5, 1):
+            name = f"@{uname}" if uname else "Аноним"
+            text += f"{i}. {name} — {cnt}\n"
+        text += "</blockquote>"
+    await message.reply(text, parse_mode="HTML")
 
 @dp.message(Command("event"))
 async def event_table(message: types.Message):
@@ -210,7 +266,7 @@ async def exchange(message: types.Message, command: CommandObject):
     try: iris_amount = int(args[0])
     except: return await message.reply("❌ Сумма числом.")
     if iris_amount <= 0: return await message.reply("❌ Больше нуля.")
-    coins, iris, _, _, _, _, _, _, _ = get_user(message.from_user.id)
+    coins, iris, _, _, _, _, _, _, _, _ = get_user(message.from_user.id)
     if iris < iris_amount: return await message.reply(f"❌ У тебя только {iris} ирисок.")
     coins_to_add = iris_amount // 2
     if coins_to_add == 0: return await message.reply("❌ Минимум 2 ириски.")
@@ -221,7 +277,7 @@ async def exchange(message: types.Message, command: CommandObject):
 
 @dp.message(Command("daily"))
 async def daily_bonus(message: types.Message):
-    _, _, _, _, _, last_daily, _, _, _ = get_user(message.from_user.id)
+    _, _, _, _, _, last_daily, _, _, _, _ = get_user(message.from_user.id)
     now = time.time()
     if now - last_daily < 86400: return await message.reply("⏳ Жди 24ч.")
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
@@ -230,52 +286,47 @@ async def daily_bonus(message: types.Message):
     add_event(message.from_user.id, 30)
     await message.reply("🎁 +30 монет!")
 
+# --- НОВАЯ РУЛЕТКА С NFT ---
 @dp.message(Command("roulette"))
 async def roulette(message: types.Message, command: CommandObject):
     args = command.args.split() if command.args else []
-    if len(args) < 2: return await message.reply("❌ /roulette [красное/зеленое] [ставка]")
-    color = args[0].lower()
-    if color not in ["красное", "зеленое"]: return await message.reply("❌ Красное или зеленое.")
-    try: bet = int(args[1])
+    if len(args) < 1: return await message.reply("❌ /roulette [ставка]")
+    try: bet = int(args[0])
     except: return await message.reply("❌ Ставка числом.")
     coins = get_user(message.from_user.id)[0]
     if coins < bet: return await message.reply("❌ Мало монет.")
     if bet < 5: return await message.reply("❌ Мин. ставка 5.")
-    result = random.choice(["красное", "зеленое"])
-    win = result == color
+    
+    # Анимация
+    msg = await message.reply("🎰 <b>Крутим рулетку...</b>\n\n❓ | ❓ | ❓", parse_mode="HTML")
+    await asyncio.sleep(1)
+    await msg.edit_text("🎰 <b>Крутим рулетку...</b>\n\n🚀 | ❓ | ❓", parse_mode="HTML")
+    await asyncio.sleep(1)
+    await msg.edit_text("🎰 <b>Крутим рулетку...</b>\n\n🚀 | 💎 | ❓", parse_mode="HTML")
+    await asyncio.sleep(1)
+    
+    # Выбор трех случайных NFT
+    items = list(SHOP.keys())
+    roll = [random.choice(items) for _ in range(3)]
+    
+    # Проверка выигрыша (если два или три совпали)
+    win = False
+    if roll[0] == roll[1] or roll[1] == roll[2] or roll[0] == roll[2]:
+        win = True
+        
+    result_text = f"🎰 <b>Результат:</b>\n\n{roll[0]} | {roll[1]} | {roll[2]}\n\n"
+    
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
     if win:
         c.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (bet, message.from_user.id))
-        text = f"🎡 {result.upper()}! 🎉 +{bet}"
+        result_text += f"🎉 <b>ПОБЕДА!</b> Ты выиграл <b>+{bet}</b> монет!"
         add_event(message.from_user.id, bet)
     else:
         c.execute("UPDATE users SET coins = MAX(0, coins - ?) WHERE user_id = ?", (bet, message.from_user.id))
-        text = f"🎡 {result.upper()}. 😢 -{bet}"
+        result_text += f"😢 <b>Проигрыш.</b> Ты потерял <b>-{bet}</b> монет."
     conn.commit(); conn.close()
-    await message.reply(f"{text}\n💰 Баланс: {get_user(message.from_user.id)[0]}", parse_mode="HTML")
-
-@dp.message(Command("duel"))
-async def duel_dice(message: types.Message):
-    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение друга.")
-    opp = message.reply_to_message.from_user
-    if opp.id == message.from_user.id or opp.is_bot: return
-    bet = 20
-    if get_user(message.from_user.id)[0] < bet or get_user(opp.id)[0] < bet: return await message.reply("❌ Нужно 20 монет.")
-    p1, p2 = random.randint(1, 6), random.randint(1, 6)
-    conn = sqlite3.connect('bot.db'); c = conn.cursor()
-    if p1 > p2:
-        c.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (bet, message.from_user.id))
-        c.execute("UPDATE users SET coins = coins - ? WHERE user_id = ?", (bet, opp.id))
-        res = f"⚔️ {p1} vs {p2}\n🏆 Победил {message.from_user.first_name}!"
-        add_event(message.from_user.id, bet)
-    elif p1 < p2:
-        c.execute("UPDATE users SET coins = coins - ? WHERE user_id = ?", (bet, message.from_user.id))
-        c.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (bet, opp.id))
-        res = f"⚔️ {p1} vs {p2}\n🏆 Победил {opp.first_name}!"
-        add_event(opp.id, bet)
-    else: res = f"⚔️ {p1} vs {p2}\n🤝 Ничья!"
-    conn.commit(); conn.close()
-    await message.reply(res, parse_mode="HTML")
+    
+    await msg.edit_text(result_text + f"\n\n💰 Баланс: {get_user(message.from_user.id)[0]}", parse_mode="HTML")
 
 @dp.message(Command("shop"))
 async def shop(message: types.Message):
@@ -416,7 +467,7 @@ async def top_iris(message: types.Message):
 @dp.message(lambda message: message.text and message.text.lower() == ".карточка")
 async def open_card(message: types.Message):
     user_id = message.from_user.id
-    coins, iris, xp, level, last_card, _, _, _, _ = get_user(user_id)
+    coins, iris, xp, level, last_card, _, _, _, _, _ = get_user(user_id)
     now = time.time()
     if now - last_card < 300: return await message.reply(f"⏳ Жди: {int((300-(now-last_card))//60)}м.", parse_mode="HTML")
     msg = await message.reply("🎴 <b>Открываем...</b>", parse_mode="HTML")
@@ -464,21 +515,6 @@ async def clan_info(message: types.Message):
     res = c.fetchone(); conn.close()
     if not res: return await message.reply("❌ Не найден.")
     await message.reply(f"🛡 <b>{args[1]}</b>\n👑 Лидер: <code>{res[0]}</code>\n👥 Участников: {len(res[1].split(','))}", parse_mode="HTML")
-
-@dp.message(Command("stats"))
-async def stats(message: types.Message):
-    if message.chat.type == "private": return await message.reply("Только в группах.")
-    chat_id = message.chat.id
-    now = time.time()
-    conn = sqlite3.connect('bot.db'); c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM chat_stats WHERE chat_id = ?", (chat_id,))
-    total = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM chat_stats WHERE chat_id = ? AND timestamp > ?", (chat_id, now - 18000))
-    c5 = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM chat_stats WHERE chat_id = ? AND timestamp > ?", (chat_id, now - 86400))
-    c24 = c.fetchone()[0]
-    conn.close()
-    await message.reply(f"📊 <b>АНАЛИТИКА</b>\n\n<blockquote>💬 Всего: {total}\n🕒 5ч: {c5}\n📅 24ч: {c24}</blockquote>", parse_mode="HTML")
 
 @dp.message(Command("mute"))
 async def mute_user(message: types.Message):
