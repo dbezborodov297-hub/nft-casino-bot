@@ -11,7 +11,7 @@ from aiogram.types import ChatPermissions, InlineKeyboardMarkup, InlineKeyboardB
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # --- НАСТРОЙКИ ---
-BOT_TOKEN = "9209660223:AAHqT4ro7ZWj_Z5gszkWKEM3P9cQx9e19Gw" 
+BOT_TOKEN = "9209660223:AAEch3uBXtWKwwnRV8tJCGS0sxH1_R-5_wg" 
 ADMIN_ID = 8907438590 
 
 bot = Bot(BOT_TOKEN)
@@ -19,8 +19,8 @@ dp = Dispatcher()
 
 # --- НАСТРОЙКИ МАГАЗИНА ---
 SHOP_ITEMS = {
-    "Ракета": {"price": 10, "limit": 15, "bonus": 10.0},
-    "Алмаз": {"price": 23, "limit": 10, "bonus": 10.3}
+    "🚀 Rocket Dog #18": {"price": 10, "limit": 15, "bonus": 10.0},
+    "💎 Diamond Dog #22": {"price": 23, "limit": 10, "bonus": 10.3}
 }
 
 # --- ФЛАСК ---
@@ -107,6 +107,14 @@ def get_total_bonus(user_id):
             bonus += SHOP_ITEMS[item]["bonus"]
     return bonus
 
+def find_shop_item(text):
+    text = text.lower()
+    for key in SHOP_ITEMS.keys():
+        key_lower = key.lower()
+        if text in key_lower or ("rocket" in text and "rocket" in key_lower) or ("ракет" in text and "rocket" in key_lower) or ("diamond" in text and "diamond" in key_lower) or ("алмаз" in text and "diamond" in key_lower):
+            return key
+    return None
+
 async def is_admin(message: types.Message):
     return message.from_user.id == ADMIN_ID
 
@@ -116,15 +124,16 @@ async def help_cmd(message: types.Message):
     text = (
         f"📖 <b>ИНСТРУКЦИЯ</b>\n\n"
         f"<b>Экономика:</b>\n"
-        f"• <b>.карточка</b> — открыть (раз в 5 минут, 5-10 монет/ирисок + бонус от NFT)\n"
-        f"• <b>/profile</b> — профиль, уровень и бонусы\n"
-        f"• <b>/top</b> — топ-5 по монетам\n"
-        f"• <b>/shop</b> — магазин NFT (Ракета, Алмаз)\n"
-        f"• <b>/inventory</b> — твои NFT и их ID\n\n"
+        f"• <b>.карточка</b> — открыть (раз в 5 минут, 5-10 монет/ирисок + бонус)\n"
+        f"• <b>/profile</b> — профиль\n"
+        f"• <b>/top</b> — топ по монетам\n"
+        f"• <b>/top_iris</b> — топ по ирискам\n"
+        f"• <b>/shop</b> — магазин NFT\n"
+        f"• <b>/inventory</b> — твои NFT\n\n"
         f"<b>Рынок (P2P):</b>\n"
         f"• <b>/sell [Название] [Цена]</b> — выставить NFT\n"
         f"• <b>/market</b> — все лоты\n"
-        f"• <b>/buy [ID]</b> — купить лот (продавец подтвердит)\n\n"
+        f"• <b>/buy [ID]</b> — купить лот\n\n"
         f"<b>Кланы:</b>\n"
         f"• <b>/clan_create [Название]</b>\n"
         f"• <b>/clan_info [Название]</b>\n\n"
@@ -135,9 +144,7 @@ async def help_cmd(message: types.Message):
         f"• <b>/clear [число]</b>\n"
         f"• <b>/close_chat</b>, <b>/open_chat</b>\n"
         f"• <b>/mute_bot</b>, <b>/mute_all_bots</b>, <b>/unmute_all_bots</b>\n\n"
-        f"💡 <b>СОВЕТ НОВИЧКУ:</b>\n"
-        f"Начни с <b>.карточка</b> каждые 5 минут. Накопи на Ракету (10 монет) — она даст +10% к дропу. "
-        f"Потом продай её на рынке дороже, если захочешь!"
+        f"💡 <b>СОВЕТ:</b> Покупай NFT командой <code>/buy_shop rocket</code> или <code>/buy_shop diamond</code>."
     )
     await message.answer(text, parse_mode="HTML")
 
@@ -152,21 +159,18 @@ async def shop(message: types.Message):
         text += f"📦 <b>{name}</b>\n"
         text += f"💰 Цена: {data['price']} монет\n"
         text += f"📈 Бонус к прибыли: +{data['bonus']}%\n"
-        text += f"📦 Продано: {sold}/{data['limit']}\n"
-        if name == "Ракета":
-            text += f"💡 <i>Дешевый старт. Идеально для новичков.</i>\n\n"
-        else:
-            text += f"💡 <i>Дороже, но и бонус больше. Для тех, кто уже накопил.</i>\n\n"
+        text += f"📦 Продано: {sold}/{data['limit']}\n\n"
     conn.close()
-    text += "Купить: <code>/buy_shop Ракета</code> или <code>/buy_shop Алмаз</code>"
+    text += "💡 Купить: <code>/buy_shop rocket</code> или <code>/buy_shop diamond</code>"
     await message.answer(text, parse_mode="HTML")
 
 @dp.message(Command("buy_shop"))
 async def buy_shop(message: types.Message):
     args = message.text.split(maxsplit=1)
-    if len(args) < 2: return await message.reply("❌ Используй: /buy_shop Ракета")
-    item_name = args[1].strip()
-    if item_name not in SHOP_ITEMS: return await message.reply("❌ Нет такого предмета.")
+    if len(args) < 2: return await message.reply("❌ Используй: /buy_shop rocket (или diamond)")
+    
+    item_name = find_shop_item(args[1].strip())
+    if not item_name: return await message.reply("❌ Нет такого предмета.")
     
     data = SHOP_ITEMS[item_name]
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
@@ -187,7 +191,7 @@ async def buy_shop(message: types.Message):
     await message.reply(
         f"✅ Ты купил <b>{item_name}</b> за {data['price']} монет!\n"
         f"Теперь каждый раз, когда ты открываешь <b>.карточку</b>, ты получаешь на <b>{data['bonus']}%</b> больше!\n\n"
-        f"💡 <i>Совет: открой /inventory, чтобы увидеть свои NFT и их бонусы.</i>", 
+        f"💡 <i>Совет: открой /inventory, чтобы увидеть свои NFT.</i>", 
         parse_mode="HTML"
     )
 
@@ -208,17 +212,19 @@ async def inventory(message: types.Message):
 # --- РЫНОК (P2P) ---
 @dp.message(Command("sell"))
 async def sell_item(message: types.Message):
-    args = message.text.split()
-    if len(args) < 3: return await message.reply("❌ Используй: /sell [Название] [Цена]\nПример: /sell Ракета 20")
+    args = message.text.split(maxsplit=2)
+    if len(args) < 3: return await message.reply("❌ Используй: /sell rocket 20")
     
-    item_name = args[1]
+    item_name = find_shop_item(args[1].strip())
+    if not item_name: return await message.reply("❌ Нет такого предмета.")
+    
     try: price = int(args[2])
     except: return await message.reply("❌ Цена должна быть числом.")
     
     items = get_inventory(message.from_user.id)
     item_to_sell = None
     for item_id, name in items:
-        if name.lower() == item_name.lower():
+        if name == item_name:
             item_to_sell = (item_id, name)
             break
             
@@ -348,14 +354,15 @@ async def profile(message: types.Message):
             f"💡 <i>Совет: открывай .карточку каждые 5 минут — это твой основной доход.</i>")
     await message.answer(text, parse_mode="HTML")
 
-# --- ТОП ---
+# --- ТОП ПО МОНЕТАМ ---
 @dp.message(Command("top"))
-async def top(message: types.Message):
+async def top_coins(message: types.Message):
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
     c.execute("SELECT username, first_name, coins FROM users ORDER BY coins DESC LIMIT 5")
     top_players = c.fetchall(); conn.close()
     if not top_players: return await message.answer("Пока нет игроков в топе.")
-    text = "🏆 <b>ТАБЛИЦА ЛИДЕРОВ</b> 🏆\n\n<blockquote>"
+    
+    text = "🏆 <b>ТОП ПО МОНЕТАМ</b> 🏆\n\n<blockquote>"
     for i, (username, first_name, coins) in enumerate(top_players, 1):
         medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
         if username: display_name = f"@{username}"
@@ -363,7 +370,26 @@ async def top(message: types.Message):
         else: display_name = "Игрок"
         text += f"{medal} {display_name} — <b>{coins}</b> 🪙\n"
     text += "</blockquote>"
-    text += "\n💡 <i>Совет: хочешь попасть в топ? Копи монеты и не забывай про бонусы от NFT.</i>"
+    text += "\n💡 <i>Совет: чтобы попасть в топ, копи монеты и не забывай про бонусы от NFT.</i>"
+    await message.answer(text, parse_mode="HTML")
+
+# --- ТОП ПО ИРИСКАМ ---
+@dp.message(Command("top_iris"))
+async def top_iris(message: types.Message):
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("SELECT username, first_name, iris FROM users ORDER BY iris DESC LIMIT 5")
+    top_players = c.fetchall(); conn.close()
+    if not top_players: return await message.answer("Пока нет игроков в топе.")
+    
+    text = "🏆 <b>ТОП ПО ИРИСКАМ</b> 🏆\n\n<blockquote>"
+    for i, (username, first_name, iris) in enumerate(top_players, 1):
+        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+        if username: display_name = f"@{username}"
+        elif first_name: display_name = first_name
+        else: display_name = "Игрок"
+        text += f"{medal} {display_name} — <b>{iris}</b> 🍬\n"
+    text += "</blockquote>"
+    text += "\n💡 <i>Совет: ириски падают из карточек так же часто, как и монеты. Собирай их!</i>"
     await message.answer(text, parse_mode="HTML")
 
 # --- КАРТОЧКА ---
@@ -573,6 +599,7 @@ async def unmute_all_bots(message: types.Message):
 @dp.message(Command("start"))
 async def start(message: types.Message):
     get_user(message.from_user.id)
+    update_user_info(message.from_user.id, message.from_user.username, message.from_user.first_name)
     await message.answer(
         "👋 <b>Привет!</b>\n\n"
         "Я твой верный помощник. Напиши /help, чтобы увидеть все команды.\n\n"
