@@ -1,171 +1,173 @@
 import asyncio
-import random
 import sqlite3
 import os
-import time
 from threading import Thread
 from flask import Flask
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram.types import ChatPermissions, InlineKeyboardButton
+from aiogram.filters import Command, CommandObject
+from aiogram.types import InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.enums import ButtonStyle # <--- Импорт цветов
 
-BOT_TOKEN = "9209660223:AAH7LMOOtCxXGve5wkJsRwft2PkWfD8VYeU"
+BOT_TOKEN = "9209660223:AAEM7nJz1VezgnNqf74aHZpcNfnYVrvS7-w"
 ADMIN_ID = 8907438590
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
+# Цены (можно менять)
+STAR_PRICE = 1.5  # рублей за 1 звезду (пример)
+
+app = Flask(__name__)
+@app.route('/')
+def health(): return "OK", 200
+
+def run_flask():
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
 def init_db():
     conn = sqlite3.connect('bot.db')
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, coins INTEGER DEFAULT 0)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS orders (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 user_id INTEGER,
+                 username TEXT,
+                 amount INTEGER,
+                 price REAL,
+                 status TEXT DEFAULT 'pending',
+                 created_at TEXT)''')
     conn.commit(); conn.close()
 
-def get_user(uid):
-    conn = sqlite3.connect('bot.db'); c = conn.cursor()
-    c.execute("SELECT coins FROM users WHERE user_id = ?", (uid,))
+def create_order(user_id, username, amount, price):
+    conn = sqlite3.connect('bot.db')
+    c = conn.cursor()
+    c.execute("INSERT INTO orders (user_id, username, amount, price, created_at) VALUES (?, ?, ?, ?, datetime('now'))",
+              (user_id, username, amount, price))
+    order_id = c.lastrowid
+    conn.commit(); conn.close()
+    return order_id
+
+def get_order(order_id):
+    conn = sqlite3.connect('bot.db')
+    c = conn.cursor()
+    c.execute("SELECT id, user_id, username, amount, price, status FROM orders WHERE id = ?", (order_id,))
     res = c.fetchone()
-    if not res:
-        c.execute("INSERT INTO users (user_id) VALUES (?)", (uid,))
-        conn.commit(); res = (0,)
-    conn.close(); return res[0]
+    conn.close()
+    return res
 
-async def is_chat_admin(message: types.Message):
-    if message.from_user.id == ADMIN_ID: return True
-    if message.chat.type == "private": return False
-    try:
-        member = await bot.get_chat_member(message.chat.id, message.from_user.id)
-        return member.status in ["administrator", "creator"]
-    except: return False
+def complete_order(order_id):
+    conn = sqlite3.connect('bot.db')
+    c = conn.cursor()
+    c.execute("UPDATE orders SET status = 'completed' WHERE id = ?", (order_id,))
+    conn.commit(); conn.close()
 
-# --- ГЛАВНОЕ МЕНЮ С ЦВЕТАМИ ---
+# --- ГЛАВНОЕ МЕНЮ ---
 @dp.message(Command("start"))
 async def start(message: types.Message):
     init_db()
     builder = InlineKeyboardBuilder()
-    # Зеленая кнопка
-    builder.row(InlineKeyboardButton(text="🎭 РП-Команды", callback_data="rp_menu", style=ButtonStyle.SUCCESS))
-    builder.row(InlineKeyboardButton(text="👤 Профиль", callback_data="profile", style=ButtonStyle.PRIMARY))
-    # Красная кнопка
-    builder.row(InlineKeyboardButton(text="❌ Закрыть", callback_data="close", style=ButtonStyle.DANGER))
+    builder.row(InlineKeyboardButton(text="⭐ Купить звёзды", callback_data="buy_stars"))
+    builder.row(InlineKeyboardButton(text="📋 Мои заказы", callback_data="my_orders"))
+    await message.answer("👋 Добро пожаловать в магазин звёзд!", reply_markup=builder.as_markup())
+
+# --- ПОКУПКА ЗВЁЗД ---
+@dp.callback_query(lambda c: c.data == "buy_stars")
+async def buy_stars(callback: types.CallbackQuery):
+    builder = InlineKeyboardBuilder()
+    for amount in [50, 100, 250, 500, 1000]:
+        price = amount * STAR_PRICE
+        builder.row(InlineKeyboardButton(
+            text=f"⭐ {amount} звёзд — {price:.0f} руб.",
+            callback_data=f"order_{amount}"
+        ))
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back"))
+    await callback.message.edit_text("Выбери количество звёзд:", reply_markup=builder.as_markup())
+
+@dp.callback_query(lambda c: c.data.startswith("order_"))
+async def process_order(callback: types.CallbackQuery):
+    amount = int(callback.data.split("_")[1])
+    price = amount * STAR_PRICE
     
-    await message.answer(
-        "👋 <b>Привет!</b>\nВыбери раздел:",
-        reply_markup=builder.as_markup(),
+    # Создаем заказ
+    order_id = create_order(callback.from_user.id, callback.from_user.username or "нет", amount, price)
+    
+    # Уведомляем админа
+    admin_text = (
+        f"🆕 <b>НОВЫЙ ЗАКАЗ #{order_id}</b>\n\n"
+        f"👤 Покупатель: @{callback.from_user.username or 'нет'} (ID: <code>{callback.from_user.id}</code>)\n"
+        f"⭐ Звёзд: <b>{amount}</b>\n"
+        f"💰 Сумма: <b>{price:.0f} руб.</b>\n\n"
+        f"<i>Отправь звёзды вручную и нажми «Выполнено»</i>"
+    )
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="✅ Выполнено", callback_data=f"complete_{order_id}"))
+    
+    try:
+        await bot.send_message(ADMIN_ID, admin_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    except: pass
+    
+    await callback.message.edit_text(
+        f"✅ <b>Заказ #{order_id} создан!</b>\n\n"
+        f"⭐ Звёзд: {amount}\n"
+        f"💰 К оплате: {price:.0f} руб.\n\n"
+        f"<b>Реквизиты для оплаты:</b>\n"
+        f"<code>СБП: +7 999 123-45-67</code>\n"
+        f"<code>TON: UQ... (твой кошелек)</code>\n\n"
+        f"<i>После оплаты напиши админу @твой_ник</i>",
         parse_mode="HTML"
     )
 
-@dp.callback_query(lambda c: c.data == "close")
-async def close_menu(callback: types.CallbackQuery):
-    await callback.message.delete()
+@dp.callback_query(lambda c: c.data.startswith("complete_"))
+async def complete_order_cb(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return await callback.answer("❌ Только админ!", show_alert=True)
+    
+    order_id = int(callback.data.split("_")[1])
+    order = get_order(order_id)
+    
+    if not order:
+        return await callback.answer("❌ Заказ не найден!", show_alert=True)
+    
+    complete_order(order_id)
+    await callback.message.edit_text(f"✅ Заказ #{order_id} выполнен!")
+    
+    # Уведомляем покупателя
+    try:
+        await bot.send_message(order[1], f"🎉 <b>Заказ #{order_id} выполнен!</b>\n⭐ Звёзды отправлены.", parse_mode="HTML")
+    except: pass
 
-@dp.callback_query(lambda c: c.data == "profile")
-async def profile_cb(callback: types.CallbackQuery):
-    coins = get_user(callback.from_user.id)
-    await callback.message.edit_text(f"👤 <b>ПРОФИЛЬ</b>\n\n🪙 Монеты: <b>{coins}</b>", parse_mode="HTML")
-
-# --- МЕНЮ РП (С ЦВЕТАМИ) ---
-@dp.callback_query(lambda c: c.data == "rp_menu")
-async def rp_menu(callback: types.CallbackQuery):
-    text = (
-        "🎭 <b>РП-КОМАНДЫ</b>\n\n"
-        "Используй ответом на сообщение:\n\n"
-        "• <b>/обнять</b>\n"
-        "• <b>/поцеловать</b>\n"
-        "• <b>/ударить</b>\n"
-        "• <b>/кусь</b>\n"
-        "• <b>/трахнуть</b>\n"
-        "• <b>/отсосать</b>\n"
-        "• <b>/связать</b>\n"
-        "• <b>/раздеть</b>"
-    )
+@dp.callback_query(lambda c: c.data == "my_orders")
+async def my_orders(callback: types.CallbackQuery):
+    conn = sqlite3.connect('bot.db')
+    c = conn.cursor()
+    c.execute("SELECT id, amount, price, status FROM orders WHERE user_id = ? ORDER BY id DESC LIMIT 5", (callback.from_user.id,))
+    orders = c.fetchall()
+    conn.close()
+    
+    if not orders:
+        return await callback.message.edit_text("📋 У тебя пока нет заказов.")
+    
+    text = "📋 <b>ТВОИ ЗАКАЗЫ</b>\n\n"
+    for oid, amount, price, status in orders:
+        status_icon = "✅" if status == "completed" else "⏳"
+        text += f"{status_icon} Заказ #{oid}: {amount} ⭐ — {price:.0f} руб.\n"
+    
     builder = InlineKeyboardBuilder()
-    # Зеленая кнопка "Назад"
-    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_main", style=ButtonStyle.SUCCESS))
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back"))
     await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
-@dp.callback_query(lambda c: c.data == "back_main")
-async def back_main(callback: types.CallbackQuery):
+@dp.callback_query(lambda c: c.data == "back")
+async def back(callback: types.CallbackQuery):
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🎭 РП-Команды", callback_data="rp_menu", style=ButtonStyle.SUCCESS))
-    builder.row(InlineKeyboardButton(text="👤 Профиль", callback_data="profile", style=ButtonStyle.PRIMARY))
-    builder.row(InlineKeyboardButton(text="❌ Закрыть", callback_data="close", style=ButtonStyle.DANGER))
-    await callback.message.edit_text("👋 <b>Главное меню</b>", reply_markup=builder.as_markup(), parse_mode="HTML")
-
-# --- РП-КОМАНДЫ ---
-@dp.message(Command("трахнуть"))
-async def rp_trah(message: types.Message):
-    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение.")
-    target = message.reply_to_message.from_user.first_name
-    await message.reply(f"🔥 {message.from_user.first_name} трахнул {target}! 🍆💦")
-
-@dp.message(Command("отсосать"))
-async def rp_otsosat(message: types.Message):
-    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение.")
-    target = message.reply_to_message.from_user.first_name
-    await message.reply(f"💦 {message.from_user.first_name} отсосал у {target}! 👅")
-
-@dp.message(Command("связать"))
-async def rp_svyazat(message: types.Message):
-    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение.")
-    target = message.reply_to_message.from_user.first_name
-    await message.reply(f"🪢 {message.from_user.first_name} связал {target}! 🔗")
-
-@dp.message(Command("раздеть"))
-async def rp_razdet(message: types.Message):
-    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение.")
-    target = message.reply_to_message.from_user.first_name
-    await message.reply(f"👕 {message.from_user.first_name} раздел {target}! 🩲")
-
-@dp.message(Command("обнять"))
-async def rp_obnyat(message: types.Message):
-    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение.")
-    target = message.reply_to_message.from_user.first_name
-    await message.reply(f"🫂 {message.from_user.first_name} обнял {target}! 🤗")
-
-@dp.message(Command("поцеловать"))
-async def rp_potselovat(message: types.Message):
-    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение.")
-    target = message.reply_to_message.from_user.first_name
-    await message.reply(f"💋 {message.from_user.first_name} поцеловал {target}! 😘")
-
-@dp.message(Command("ударить"))
-async def rp_udarit(message: types.Message):
-    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение.")
-    target = message.reply_to_message.from_user.first_name
-    await message.reply(f"👊 {message.from_user.first_name} ударил {target}! 💥")
-
-@dp.message(Command("кусь"))
-async def rp_kus(message: types.Message):
-    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение.")
-    target = message.reply_to_message.from_user.first_name
-    await message.reply(f"😈 {message.from_user.first_name} кусь {target}! 🦷")
-
-# --- МОДЕРАЦИЯ ---
-@dp.message(Command("mute"))
-async def mute_user(message: types.Message):
-    if not await is_chat_admin(message) or not message.reply_to_message:
-        return await message.reply("❌ Нет прав или нет ответа.")
-    try:
-        await bot.restrict_chat_member(message.chat.id, message.reply_to_message.from_user.id, ChatPermissions(can_send_messages=False), until_date=int(time.time()) + 3600)
-        await message.reply("🤐 Замучен на час.")
-    except Exception as e: await message.reply(f"Ошибка: {e}")
-
-@dp.message(Command("ban"))
-async def ban_user(message: types.Message):
-    if not await is_chat_admin(message) or not message.reply_to_message:
-        return await message.reply("❌ Нет прав.")
-    try:
-        await bot.ban_chat_member(message.chat.id, message.reply_to_message.from_user.id)
-        await message.reply("🔨 Забанен.")
-    except: pass
+    builder.row(InlineKeyboardButton(text="⭐ Купить звёзды", callback_data="buy_stars"))
+    builder.row(InlineKeyboardButton(text="📋 Мои заказы", callback_data="my_orders"))
+    await callback.message.edit_text("👋 Главное меню:", reply_markup=builder.as_markup())
 
 async def main():
     init_db()
     await bot.delete_webhook(drop_pending_updates=True)
-    print("🚀 Бот запущен!")
+    Thread(target=run_flask, daemon=True).start()
+    await asyncio.sleep(3)
+    print("🚀 Бот-магазин звёзд запущен!")
     await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
