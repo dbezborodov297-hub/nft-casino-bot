@@ -10,7 +10,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import ChatPermissions, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-BOT_TOKEN = "9209660223:AAEYdYeJTYjL6edp3lEQhfmvPhDphXVMzos"
+BOT_TOKEN = "9209660223:AAEUC0yzyJPV3DB3ah6LdJwracFPBGn50nc"
 ADMIN_ID = 8907438590
 EVENT_DAYS = 15
 EVENT_PRIZE = 500
@@ -28,7 +28,16 @@ BASE_SHOP = {
     "🛟 Lifebuoy #3": {"base": 50, "limit": 90, "bonus": 12.8},
     "🕶️ Dark Glasses #0": {"base": 750, "limit": 5, "bonus": 34.7},
     "🎃 Pumpkin Dog #1": {"base": 50, "limit": 50, "bonus": 9.9},
-    "🍭 Lollipop #2": {"base": 15, "limit": 144, "bonus": 5.0}
+    "🍭 Lollipop #2": {"base": 15, "limit": 144, "bonus": 5.0},
+    "🎗️ Ribbon": {"base": 47, "limit": 65, "bonus": 7.9},
+    "🎖️ Medal Skin": {"base": 75, "limit": 15, "bonus": 8.3},
+    "🎩 Hat": {"base": 150, "limit": 60, "bonus": 19.8},
+    "🎭 Mask": {"base": 90, "limit": 130, "bonus": 19.9},
+    "🎒 Backpack": {"base": 35, "limit": 180, "bonus": 11.3},
+    "🪀 Yo-yo": {"base": 125, "limit": 55, "bonus": 18.2},
+    "🧶 Yarn": {"base": 220, "limit": 9, "bonus": 28.9},
+    "👓 Glasses": {"base": 775, "limit": 120, "bonus": 34.8},
+    "🥽 Goggles": {"base": 333, "limit": 105, "bonus": 27.0}
 }
 SHOP = {}
 
@@ -100,7 +109,6 @@ def get_inv(uid):
 def get_bonus(uid):
     items = get_inv(uid); bonus = 0.0
     for _, item in items:
-        # Извлекаем бонус из базового названия, если есть
         base_name = item.split(" [")[0]
         if base_name in SHOP: bonus += SHOP[base_name]["bonus"]
     return bonus
@@ -288,7 +296,6 @@ async def daily_bonus(message: types.Message):
     add_event(message.from_user.id, 30)
     await message.reply("🎁 +30 монет!")
 
-# --- НОВАЯ РУЛЕТКА ---
 @dp.message(Command("roulette"))
 async def roulette(message: types.Message, command: CommandObject):
     args = command.args.split() if command.args else []
@@ -298,9 +305,7 @@ async def roulette(message: types.Message, command: CommandObject):
     coins = get_user(message.from_user.id)[0]
     if coins < bet: return await message.reply("❌ Мало монет.")
     if bet < 5: return await message.reply("❌ Мин. ставка 5.")
-    
     all_items = list(SHOP.keys())
-    
     msg = await message.reply("🎰 <b>Крутим рулетку...</b>\n\n❓ | ❓ | ❓", parse_mode="HTML")
     try:
         await asyncio.sleep(1)
@@ -309,10 +314,8 @@ async def roulette(message: types.Message, command: CommandObject):
         await msg.edit_text(f"🎰 <b>Крутим рулетку...</b>\n\n{random.choice(all_items)} | {random.choice(all_items)} | ❓", parse_mode="HTML")
         await asyncio.sleep(1)
     except: pass
-    
     roll = [random.choice(all_items) for _ in range(3)]
     win = (roll[0] == roll[1] or roll[1] == roll[2] or roll[0] == roll[2])
-        
     result_text = f"🎰 <b>Результат:</b>\n\n{roll[0]} | {roll[1]} | {roll[2]}\n\n"
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
     if win:
@@ -323,24 +326,17 @@ async def roulette(message: types.Message, command: CommandObject):
         c.execute("UPDATE users SET coins = MAX(0, coins - ?) WHERE user_id = ?", (bet, message.from_user.id))
         result_text += f"😢 <b>Проигрыш.</b> -{bet} монет."
     conn.commit(); conn.close()
-    
     try: await msg.edit_text(result_text + f"\n\n💰 Баланс: {get_user(message.from_user.id)[0]}", parse_mode="HTML")
     except: await message.answer(result_text + f"\n\n💰 Баланс: {get_user(message.from_user.id)[0]}", parse_mode="HTML")
 
-# --- КРАФТ ---
 @dp.message(Command("craft"))
 async def craft_menu(message: types.Message):
     items = get_inv(message.from_user.id)
-    if not items: return await message.reply("🎒 Инвентарь пуст. /shop", parse_mode="HTML")
-    
+    if len(items) < 3: return await message.reply("❌ Для крафта нужно минимум 3 NFT.", parse_mode="HTML")
     builder = InlineKeyboardBuilder()
     for item_id, name in items:
-        # Ищем базовую цену
-        base_name = name.split(" [")[0]
-        price = SHOP[base_name]["price"] if base_name in SHOP else 0
-        builder.row(InlineKeyboardButton(text=f"{name} (Цена: {price})", callback_data=f"craft_{item_id}"))
+        builder.row(InlineKeyboardButton(text=f"{name}", callback_data=f"craft_{item_id}"))
     builder.row(InlineKeyboardButton(text="🔙 Закрыть", callback_data="close_craft"))
-    
     await message.answer("🔨 <b>КРАФТ</b>\nВыбери NFT для улучшения:", reply_markup=builder.as_markup(), parse_mode="HTML")
 
 @dp.callback_query(lambda c: c.data.startswith("craft_") and c.data != "close_craft")
@@ -350,50 +346,38 @@ async def craft_item(callback: types.CallbackQuery):
     c.execute("SELECT item_name FROM inventory WHERE id = ? AND user_id = ?", (item_id, callback.from_user.id))
     res = c.fetchone(); conn.close()
     if not res: return await callback.answer("❌ NFT не найден.")
-    
     name = res[0]
     base_name = name.split(" [")[0]
     base_price = SHOP[base_name]["price"] if base_name in SHOP else 10
-    
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="+10% (Шанс 90%)", callback_data=f"do_craft_{item_id}_10_90"))
-    builder.row(InlineKeyboardButton(text="+20% (Шанс 70%)", callback_data=f"do_craft_{item_id}_20_70"))
-    builder.row(InlineKeyboardButton(text="+50% (Шанс 40%)", callback_data=f"do_craft_{item_id}_50_40"))
-    builder.row(InlineKeyboardButton(text="+100% (Шанс 10%)", callback_data=f"do_craft_{item_id}_100_10"))
+    builder.row(InlineKeyboardButton(text="+10 монет (Шанс 80%)", callback_data=f"do_craft_{item_id}_10"))
+    builder.row(InlineKeyboardButton(text="+50 монет (Шанс 50%)", callback_data=f"do_craft_{item_id}_50"))
+    builder.row(InlineKeyboardButton(text="+100 монет (Шанс 20%)", callback_data=f"do_craft_{item_id}_100"))
     builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="close_craft"))
-    
-    text = (f"🔨 <b>КРАФТ: {name}</b>\n\n"
-            f"Текущая цена: <b>{base_price}</b> монет\n"
-            f"Выбери, на сколько хочешь улучшить:")
+    text = (f"🔨 <b>КРАФТ: {name}</b>\n\nТекущая цена: <b>{base_price}</b> монет\nВыбери, на сколько хочешь улучшить:")
     await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 @dp.callback_query(lambda c: c.data.startswith("do_craft_"))
 async def do_craft(callback: types.CallbackQuery):
     parts = callback.data.split("_")
-    item_id, percent, chance = int(parts[2]), int(parts[3]), int(parts[4])
-    
-    # Проверяем, есть ли предмет
+    item_id, add_price = int(parts[2]), int(parts[3])
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
     c.execute("SELECT item_name FROM inventory WHERE id = ? AND user_id = ?", (item_id, callback.from_user.id))
     res = c.fetchone()
     if not res:
         conn.close()
         return await callback.answer("❌ NFT не найден.")
-    
     name = res[0]
     base_name = name.split(" [")[0]
-    
     await callback.message.edit_text("🔨 <b>Крафтим...</b>\n\n🔄 Плавим NFT в котле...", parse_mode="HTML")
     await asyncio.sleep(2)
-    
+    chance = 80 if add_price == 10 else (50 if add_price == 50 else 20)
     if random.randint(1, 100) <= chance:
-        # Успех — улучшаем название
-        new_name = f"{base_name} [+{percent}%]"
+        new_name = f"{base_name} [+{add_price} монет]"
         c.execute("UPDATE inventory SET item_name = ? WHERE id = ?", (new_name, item_id))
         conn.commit()
         await callback.message.edit_text(f"🎉 <b>УСПЕХ!</b>\nТвой NFT улучшен до: <b>{new_name}</b>", parse_mode="HTML")
     else:
-        # Провал — удаляем
         c.execute("DELETE FROM inventory WHERE id = ?", (item_id,))
         conn.commit()
         await callback.message.edit_text(f"💥 <b>ПРОВАЛ!</b>\nТвой <b>{name}</b> сгорел в котле.", parse_mode="HTML")
@@ -403,7 +387,6 @@ async def do_craft(callback: types.CallbackQuery):
 async def close_craft(callback: types.CallbackQuery):
     await callback.message.delete()
 
-# --- ОСТАЛЬНЫЕ ФУНКЦИИ ---
 @dp.message(Command("shop"))
 async def shop(message: types.Message):
     load_prices()
@@ -546,7 +529,6 @@ async def open_card(message: types.Message):
     coins, iris, xp, level, last_card, _, _, _, _, _ = get_user(user_id)
     now = time.time()
     if now - last_card < 300: return await message.reply(f"⏳ Жди: {int((300-(now-last_card))//60)}м.", parse_mode="HTML")
-    
     msg = await message.reply("🎴 <b>Открываем карточку...</b>", parse_mode="HTML")
     try:
         await asyncio.sleep(1.5)
@@ -555,11 +537,9 @@ async def open_card(message: types.Message):
         await msg.edit_text("✨ <b>Почти готово...</b>", parse_mode="HTML")
         await asyncio.sleep(1.5)
     except: pass
-        
     base = random.randint(5, 10)
     bonus_p = get_bonus(user_id) / 100.0
     final = int(base * (1 + bonus_p))
-    
     if random.random() < 0.05:
         final *= 5
         reward = f"🌟 <b>ЗОЛОТАЯ КАРТОЧКА!</b> x5\n🪙 +{final} монет!"
@@ -572,11 +552,9 @@ async def open_card(message: types.Message):
     else:
         reward = f"🍬 +{final} ирисок!"
         nc, ni = coins, iris + final
-        
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
     c.execute("UPDATE users SET coins = ?, iris = ?, xp = xp + 5, last_card = ? WHERE user_id = ?", (nc, ni, now, user_id))
     conn.commit(); conn.close()
-    
     try:
         await msg.edit_text(f"🎉 <b>Карточка открыта!</b>\n<blockquote>{reward}</blockquote>\n💡 <i>Покупай NFT в /shop.</i>", parse_mode="HTML")
     except:
