@@ -11,13 +11,13 @@ from aiogram.types import ChatPermissions, InlineKeyboardMarkup, InlineKeyboardB
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # --- НАСТРОЙКИ ---
-BOT_TOKEN = "9209660223:AAGgLkyjHQ1UYlkNh30ysYYA4YceSOoMGxc"
+BOT_TOKEN = "9209660223:AAGILT1ZhbYgfO7uU8iAbw-flqxW9UIbYNU"
 ADMIN_ID = 8907438590 
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
-# --- НАСТРОЙКИ МАГАЗИНА (БАЗОВЫЕ ЦЕНЫ) ---
+# --- НАСТРОЙКИ МАГАЗИНА (АНГЛИЙСКИЕ НАЗВАНИЯ) ---
 BASE_SHOP_ITEMS = {
     "🚀 Rocket Dog #18": {"base_price": 10, "limit": 15, "bonus": 10.0},
     "💎 Diamond Dog #22": {"base_price": 23, "limit": 10, "bonus": 10.3},
@@ -25,7 +25,9 @@ BASE_SHOP_ITEMS = {
     "🪄 Wand #4": {"base_price": 70, "limit": 145, "bonus": 14.2},
     "🪔 Lamp #7": {"base_price": 120, "limit": 35, "bonus": 19.2},
     "🏅 Medal #9": {"base_price": 44, "limit": 45, "bonus": 11.1},
-    "🛟 Lifebuoy #3": {"base_price": 50, "limit": 90, "bonus": 12.8}
+    "🛟 Lifebuoy #3": {"base_price": 50, "limit": 90, "bonus": 12.8},
+    "🕶️ Dark Glasses #0": {"base_price": 750, "limit": 5, "bonus": 34.7},
+    "🎃 Pumpkin Dog #1": {"base_price": 50, "limit": 50, "bonus": 9.9}
 }
 
 SHOP_ITEMS = {}
@@ -63,7 +65,8 @@ def init_db():
     
     for name, data in BASE_SHOP_ITEMS.items():
         c.execute("INSERT OR IGNORE INTO shop_sold (item_name, sold_count) VALUES (?, 0)", (name,))
-        c.execute("INSERT OR IGNORE INTO prices (item_name, current_price) VALUES (?, ?)", (name, data["base_price"]))
+        # Принудительно обновляем цену и имя, если поменяли в коде
+        c.execute("INSERT OR REPLACE INTO prices (item_name, current_price) VALUES (?, ?)", (name, data["base_price"]))
         SHOP_ITEMS[name] = {"price": data["base_price"], "limit": data["limit"], "bonus": data["bonus"], "base_price": data["base_price"]}
     conn.commit(); conn.close()
 
@@ -106,13 +109,6 @@ def get_total_bonus(user_id):
             bonus += SHOP_ITEMS[item]["bonus"]
     return bonus
 
-def find_shop_item(text):
-    text = text.lower()
-    for key in SHOP_ITEMS.keys():
-        if text in key.lower():
-            return key
-    return None
-
 def get_rank(coins):
     if coins < 50: return "🥉 Новичок"
     elif coins < 150: return "🥈 Любитель"
@@ -123,24 +119,24 @@ async def is_admin(message: types.Message):
     if message.from_user.id == ADMIN_ID: return True
     return get_user(message.from_user.id)[6] == 1
 
-# --- МЕХАНИКА РЫНКА (ПАДЕНИЕ ЦЕН) ---
+# --- МЕХАНИКА РЫНКА (ПЛАВНАЯ) ---
 async def market_fluctuation():
     await asyncio.sleep(10)
     while True:
-        await asyncio.sleep(3600 * 6) 
+        await asyncio.sleep(3600 * 4) 
         if not SHOP_ITEMS: continue
         item_name = random.choice(list(SHOP_ITEMS.keys()))
         item_data = SHOP_ITEMS[item_name]
         current = item_data["price"]
         base = item_data["base_price"]
-        drop_percent = random.uniform(0.10, 0.15)
-        new_price = max(int(current * (1 - drop_percent)), int(base * 0.5))
+        drop_percent = random.uniform(0.02, 0.05)
+        new_price = max(int(current * (1 - drop_percent)), int(base * 0.7))
+        
         if new_price < current:
             item_data["price"] = new_price
             conn = sqlite3.connect('bot.db'); c = conn.cursor()
             c.execute("UPDATE prices SET current_price = ? WHERE item_name = ?", (new_price, item_name))
             conn.commit(); conn.close()
-            print(f"📉 Рынок: {item_name} подешевел до {new_price}")
 
 # --- ИНСТРУКЦИЯ ---
 @dp.message(Command("help"))
@@ -156,9 +152,9 @@ async def help_cmd(message: types.Message):
         f"• <b>/profile</b> — профиль и ранг\n"
         f"• <b>/top</b> — топ по монетам\n"
         f"• <b>/top_iris</b> — топ по ирискам\n"
-        f"• <b>/shop</b> — магазин NFT\n"
+        f"• <b>/shop</b> — магазин NFT (кнопки)\n"
         f"• <b>/inventory</b> — твои NFT\n"
-        f"• <b>/ref</b> — реферальный кабинет\n\n"
+        f"• <b>/ref</b> — реферальный кабинет (+3 монеты за друга)\n\n"
         f"<b>🏪 Рынок:</b>\n"
         f"• <b>/sell [Название] [Цена]</b>\n"
         f"• <b>/market</b>\n"
@@ -185,7 +181,6 @@ async def stats(message: types.Message):
     chat_id = message.chat.id
     now = time.time()
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
-    
     c.execute("SELECT COUNT(*) FROM chat_stats WHERE chat_id = ?", (chat_id,))
     total_msgs = c.fetchone()[0]
     c.execute("SELECT COUNT(*) FROM chat_stats WHERE chat_id = ? AND timestamp > ?", (chat_id, now - 18000))
@@ -194,17 +189,8 @@ async def stats(message: types.Message):
     top_5h = c.fetchall()
     c.execute("SELECT COUNT(*) FROM chat_stats WHERE chat_id = ? AND timestamp > ?", (chat_id, now - 86400))
     count_24h = c.fetchone()[0]
-    c.execute("SELECT username, COUNT(*) FROM chat_stats WHERE chat_id = ? AND timestamp > ? GROUP BY username ORDER BY COUNT(*) DESC LIMIT 3", (chat_id, now - 86400))
-    top_24h = c.fetchall()
     conn.close()
-    
-    text = (f"📊 <b>ПОЛНАЯ АНАЛИТИКА</b>\n\n<blockquote>💬 Всего: {total_msgs}</blockquote>\n"
-            f"<b>🕒 За 5ч:</b> {count_5h} сообщений\n")
-    for i, (u, cnt) in enumerate(top_5h, 1):
-        text += f"{i}. @{u or 'Аноним'} — {cnt}\n"
-    text += f"\n<b>📅 За 24ч:</b> {count_24h} сообщений\n"
-    for i, (u, cnt) in enumerate(top_24h, 1):
-        text += f"{i}. @{u or 'Аноним'} — {cnt}\n"
+    text = f"📊 <b>АНАЛИТИКА</b>\n\n<blockquote>💬 Всего: {total_msgs}\n🕒 5ч: {count_5h}\n📅 24ч: {count_24h}</blockquote>"
     await message.reply(text, parse_mode="HTML")
 
 # --- РУЛЕТКА ---
@@ -219,7 +205,6 @@ async def roulette(message: types.Message, command: CommandObject):
     coins = get_user(message.from_user.id)[0]
     if coins < bet: return await message.reply("❌ Мало монет.")
     if bet < 5: return await message.reply("❌ Мин. ставка 5.")
-    
     result = random.choice(["красное", "зеленое"])
     win = result == color
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
@@ -232,14 +217,14 @@ async def roulette(message: types.Message, command: CommandObject):
     conn.commit(); conn.close()
     await message.reply(f"{text}\n💰 Баланс: {get_user(message.from_user.id)[0]}", parse_mode="HTML")
 
-# --- РЕФЕРАЛЬНЫЙ КАБИНЕТ ---
+# --- РЕФЕРАЛКА ---
 @dp.message(Command("ref"))
 async def ref_cabinet(message: types.Message):
     ref_link = f"https://t.me/{(await bot.get_me()).username}?start={message.from_user.id}"
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM users WHERE referrer_id = ?", (message.from_user.id,))
     count = c.fetchone()[0]; conn.close()
-    await message.reply(f"👥 <b>РЕФЕРАЛКА</b>\n\n🔗 <code>{ref_link}</code>\n\n👤 Друзей: {count}", parse_mode="HTML")
+    await message.reply(f"👥 <b>РЕФЕРАЛКА</b>\n\n🔗 <code>{ref_link}</code>\n\n👤 Друзей: {count}\n🎁 За друга: +3 монеты", parse_mode="HTML")
 
 # --- СТАРТ ---
 @dp.message(Command("start"))
@@ -255,9 +240,9 @@ async def start(message: types.Message, command: CommandObject):
             res = c.fetchone()
             if res and res[0] is None:
                 c.execute("UPDATE users SET referrer_id = ? WHERE user_id = ?", (ref, user_id))
-                c.execute("UPDATE users SET coins = coins + 10 WHERE user_id = ?", (ref,))
+                c.execute("UPDATE users SET coins = coins + 3 WHERE user_id = ?", (ref,))
                 conn.commit()
-                try: await bot.send_message(ref, "🎉 Новый реферал! +10 монет.")
+                try: await bot.send_message(ref, "🎉 Новый реферал! +3 монеты.")
                 except: pass
             conn.close()
     await message.answer("👋 Привет! /help — команды.\n💡 <i>Совет: .карточка — доход.</i>", parse_mode="HTML")
@@ -286,55 +271,69 @@ async def duel_dice(message: types.Message):
     if p1 > p2:
         c.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (bet, message.from_user.id))
         c.execute("UPDATE users SET coins = coins - ? WHERE user_id = ?", (bet, opp.id))
-        res = f"⚔️ {message.from_user.first_name}: {p1} | {opp.first_name}: {p2}\n🏆 Победил {message.from_user.first_name}!"
+        res = f"⚔️ {p1} vs {p2}\n🏆 Победил {message.from_user.first_name}!"
     elif p1 < p2:
         c.execute("UPDATE users SET coins = coins - ? WHERE user_id = ?", (bet, message.from_user.id))
         c.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (bet, opp.id))
-        res = f"⚔️ {message.from_user.first_name}: {p1} | {opp.first_name}: {p2}\n🏆 Победил {opp.first_name}!"
-    else: res = f"⚔️ {p1} | {p2}\n🤝 Ничья!"
+        res = f"⚔️ {p1} vs {p2}\n🏆 Победил {opp.first_name}!"
+    else: res = f"⚔️ {p1} vs {p2}\n🤝 Ничья!"
     conn.commit(); conn.close()
     await message.reply(res, parse_mode="HTML")
 
-# --- МАГАЗИН ---
+# --- МАГАЗИН С КНОПКАМИ ---
 @dp.message(Command("shop"))
 async def shop(message: types.Message):
     load_current_prices()
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
-    text = "🛒 <b>МАГАЗИН NFT</b>\n\n"
+    text = "🛒 <b>МАГАЗИН NFT</b>\n\nНажми на кнопку, чтобы купить:"
+    
+    builder = InlineKeyboardBuilder()
     for name, data in SHOP_ITEMS.items():
         c.execute("SELECT sold_count FROM shop_sold WHERE item_name = ?", (name,))
         sold = c.fetchone()[0]
-        text += f"📦 <b>{name}</b>\n💰 {data['price']} монет (база {data['base_price']})\n📈 +{data['bonus']}%\n📦 {sold}/{data['limit']}\n\n"
+        text += f"\n\n📦 <b>{name}</b>\n💰 {data['price']} монет (+{data['bonus']}%)\n📦 Осталось: {data['limit'] - sold} из {data['limit']}"
+        builder.row(InlineKeyboardButton(text=f"Купить {name} ({data['price']} 🪙)", callback_data=f"buy_nft_{name}"))
+    
+    builder.row(InlineKeyboardButton(text="🔙 Закрыть", callback_data="close_shop"))
     conn.close()
-    await message.answer(text + "💡 <i>Совет: рынок иногда падает, следи за ценами!</i>", parse_mode="HTML")
+    await message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
-@dp.message(Command("buy_shop"))
-async def buy_shop(message: types.Message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2: return
-    item_name = find_shop_item(args[1].strip())
-    if not item_name: return await message.reply("❌ Нет такого.")
-    data = SHOP_ITEMS[item_name]
+@dp.callback_query(lambda c: c.data.startswith("buy_nft_"))
+async def buy_nft_callback(callback: types.CallbackQuery):
+    item_name = callback.data.replace("buy_nft_", "")
+    data = SHOP_ITEMS.get(item_name)
+    if not data: return await callback.answer("❌ Нет такого.")
+    
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
     c.execute("SELECT sold_count FROM shop_sold WHERE item_name = ?", (item_name,))
-    if c.fetchone()[0] >= data["limit"]: conn.close(); return await message.reply("❌ Распродано!")
-    if get_user(message.from_user.id)[0] < data["price"]: conn.close(); return await message.reply("❌ Мало монет!")
+    if c.fetchone()[0] >= data["limit"]: conn.close(); return await callback.answer("❌ Распродано!", show_alert=True)
     
-    c.execute("UPDATE users SET coins = coins - ? WHERE user_id = ?", (data["price"], message.from_user.id))
-    c.execute("INSERT INTO inventory (user_id, item_name) VALUES (?, ?)", (message.from_user.id, item_name))
+    user_coins = get_user(callback.from_user.id)[0]
+    if user_coins < data["price"]: conn.close(); return await callback.answer(f"❌ Мало монет! Нужно {data['price']}.", show_alert=True)
+    
+    c.execute("UPDATE users SET coins = coins - ? WHERE user_id = ?", (data["price"], callback.from_user.id))
+    c.execute("INSERT INTO inventory (user_id, item_name) VALUES (?, ?)", (callback.from_user.id, item_name))
     c.execute("UPDATE shop_sold SET sold_count = sold_count + 1 WHERE item_name = ?", (item_name,))
+    
+    # Плавный рост цены (2%)
+    if random.random() < 0.3:
+        new_price = int(data["price"] * 1.02)
+        data["price"] = new_price
+        c.execute("UPDATE prices SET current_price = ? WHERE item_name = ?", (new_price, item_name))
+    
     conn.commit(); conn.close()
     
-    if random.random() < 0.2:
-        new_price = int(data["price"] * 1.05)
-        data["price"] = new_price
-        conn = sqlite3.connect('bot.db'); c = conn.cursor()
-        c.execute("UPDATE prices SET current_price = ? WHERE item_name = ?", (new_price, item_name))
-        conn.commit(); conn.close()
-        await message.reply(f"✅ Куплено <b>{item_name}</b> за {data['price']}!\n📈 Спрос вырос, цена поднялась до {new_price}!", parse_mode="HTML")
-    else:
-        await message.reply(f"✅ Куплено <b>{item_name}</b> за {data['price']}!\n💡 <i>Совет: /inventory</i>", parse_mode="HTML")
+    news = f"📰 <b>НОВОСТЬ!</b> Игрок {callback.from_user.first_name} скупил <b>{item_name}</b> за {data['price']} монет!"
+    try: await callback.message.answer(news, parse_mode="HTML")
+    except: pass
+    
+    await callback.answer(f"✅ Ты купил {item_name}!", show_alert=True)
 
+@dp.callback_query(lambda c: c.data == "close_shop")
+async def close_shop(callback: types.CallbackQuery):
+    await callback.message.delete()
+
+# --- ИНВЕНТАРЬ ---
 @dp.message(Command("inventory"))
 async def inventory(message: types.Message):
     items = get_inventory(message.from_user.id)
@@ -346,12 +345,17 @@ async def inventory(message: types.Message):
 @dp.message(Command("sell"))
 async def sell_item(message: types.Message):
     args = message.text.split(maxsplit=2)
-    if len(args) < 3: return await message.reply("❌ /sell rocket 20")
-    item_name = find_shop_item(args[1].strip())
+    if len(args) < 3: return await message.reply("❌ /sell Rocket 20")
+    # Ищем предмет по частичному совпадению
+    search_name = args[1].lower()
+    item_name = next((k for k in SHOP_ITEMS.keys() if search_name in k.lower()), None)
+    if not item_name: return await message.reply("❌ Нет такого.")
     try: price = int(args[2])
     except: return await message.reply("❌ Цена числом.")
+    
     item_to_sell = next(((i, n) for i, n in get_inventory(message.from_user.id) if n == item_name), None)
-    if not item_to_sell: return await message.reply("❌ Нет такого.")
+    if not item_to_sell: return await message.reply("❌ Нет такого у тебя.")
+    
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
     c.execute("DELETE FROM inventory WHERE id = ?", (item_to_sell[0],))
     c.execute("INSERT INTO market (seller_id, item_name, price) VALUES (?, ?, ?)", (message.from_user.id, item_to_sell[1], price))
