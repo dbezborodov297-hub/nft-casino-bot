@@ -10,23 +10,23 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-BOT_TOKEN = "9209660223:AAELeyMQPry0GQS9mSFziu0oX-YP2WDfHFs"
+BOT_TOKEN = "9022493828:AAFpmiRB9LfZBRy3HCZXC1NBVW-mfO_xs8c"
 ADMIN_ID = 8907438590
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
-# --- NFT С ФОНАМИ И ЦЕННОСТЬЮ ---
+# --- NFT С ССЫЛКАМИ, ФОНАМИ И ЦЕННОСТЬЮ ---
 NFT_ITEMS = [
-    {"name": "TimelessBook #18804", "backdrop": "Copper", "price": 10},
-    {"name": "TimelessBook #6792", "backdrop": "Silver", "price": 15},
-    {"name": "TimelessBook #68921", "backdrop": "Gold", "price": 25},
-    {"name": "TimelessBook #33555", "backdrop": "Celtic Blue", "price": 50},
-    {"name": "TimelessBook #46921", "backdrop": "Desert Sand", "price": 20},
-    {"name": "TimelessBook #35131", "backdrop": "Desert Sand", "price": 40},
+    {"name": "TimelessBook #18804", "backdrop": "Copper", "price": 10, "url": "https://t.me/nft/TimelessBook-18804"},
+    {"name": "TimelessBook #6792", "backdrop": "Silver", "price": 15, "url": "https://t.me/nft/TimelessBook-6792"},
+    {"name": "TimelessBook #68921", "backdrop": "Gold", "price": 25, "url": "https://t.me/nft/TimelessBook-68921"},
+    {"name": "TimelessBook #33555", "backdrop": "Celtic Blue", "price": 50, "url": "https://t.me/nft/TimelessBook-33555"},
+    {"name": "TimelessBook #46921", "backdrop": "Desert Sand", "price": 20, "url": "https://t.me/nft/TimelessBook-46921"},
+    {"name": "TimelessBook #35131", "backdrop": "Desert Sand", "price": 40, "url": "https://t.me/nft/TimelessBook-35131"},
 ]
 
-# --- ШАНСЫ НА КРАФТ (ТОЛЬКО ДЛЯ ЭТИХ NFT) ---
+# --- ШАНСЫ НА КРАФТ ---
 CRAFT_CHANCES = {
     "TimelessBook #33555": 5,
     "TimelessBook #35131": 47
@@ -47,7 +47,8 @@ def init_db():
                  user_id INTEGER,
                  item_name TEXT,
                  backdrop TEXT,
-                 price INTEGER)''')
+                 price INTEGER,
+                 url TEXT)''')
     conn.commit(); conn.close()
 
 def get_user(uid):
@@ -69,29 +70,30 @@ def update_last_card(uid, timestamp):
     c.execute("UPDATE users SET last_card = ? WHERE user_id = ?", (timestamp, uid))
     conn.commit(); conn.close()
 
-def add_nft_to_inv(uid, name, backdrop, price):
+def add_nft_to_inv(uid, name, backdrop, price, url):
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
-    c.execute("INSERT INTO inventory (user_id, item_name, backdrop, price) VALUES (?, ?, ?, ?)", (uid, name, backdrop, price))
+    c.execute("INSERT INTO inventory (user_id, item_name, backdrop, price, url) VALUES (?, ?, ?, ?, ?)", (uid, name, backdrop, price, url))
     conn.commit(); conn.close()
 
 def get_inv(uid):
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
-    c.execute("SELECT id, item_name, backdrop, price FROM inventory WHERE user_id = ?", (uid,))
+    c.execute("SELECT id, item_name, backdrop, price, url FROM inventory WHERE user_id = ?", (uid,))
     items = c.fetchall(); conn.close(); return items
 
-# --- КАРТОЧКА (РАЗ В 15 МИНУТ) ---
+# --- СТАРТ ---
 @dp.message(Command("start"))
 async def start(message: types.Message):
     init_db()
     await message.answer("👋 Привет! Пиши <b>.карточка</b>, чтобы открыть NFT и получить очки!", parse_mode="HTML")
 
+# --- КАРТОЧКА (15 МИНУТ) ---
 @dp.message(lambda message: message.text and message.text.lower() == ".карточка")
 async def open_card(message: types.Message):
     user_id = message.from_user.id
     coins, points, last_card = get_user(user_id)
     now = time.time()
     
-    if now - last_card < 900: # 15 минут = 900 секунд
+    if now - last_card < 900:
         left = 900 - (now - last_card)
         return await message.reply(f"⏳ Жди: {int(left // 60)}м {int(left % 60)}с.")
     
@@ -107,7 +109,11 @@ async def open_card(message: types.Message):
     nft = random.choice(NFT_ITEMS)
     add_points(user_id, 50)
     update_last_card(user_id, now)
-    add_nft_to_inv(user_id, nft["name"], nft["backdrop"], nft["price"])
+    add_nft_to_inv(user_id, nft["name"], nft["backdrop"], nft["price"], nft["url"])
+    
+    # Кнопка для открытия NFT по ссылке
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔗 Открыть NFT", url=nft["url"]))
     
     text = (
         f"🎉 <b>Тебе выпал NFT!</b>\n\n"
@@ -119,9 +125,9 @@ async def open_card(message: types.Message):
     )
     
     try:
-        await msg.edit_text(text, parse_mode="HTML")
+        await msg.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
     except:
-        await message.answer(text, parse_mode="HTML")
+        await message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 # --- ИНВЕНТАРЬ ---
 @dp.message(Command("inventory"))
@@ -131,7 +137,7 @@ async def inventory(message: types.Message):
         return await message.reply("🎒 Инвентарь пуст.")
     
     text = "🎒 <b>ИНВЕНТАРЬ</b>\n\n"
-    for item_id, name, backdrop, price in items:
+    for item_id, name, backdrop, price, url in items:
         text += f"• <b>{name}</b> ({backdrop}) — {price} монет\n"
     
     await message.reply(text, parse_mode="HTML")
@@ -144,8 +150,7 @@ async def craft_menu(message: types.Message):
         return await message.reply("🎒 Инвентарь пуст.")
     
     builder = InlineKeyboardBuilder()
-    for item_id, name, backdrop, price in items:
-        # Показываем только те, у которых есть шанс на крафт
+    for item_id, name, backdrop, price, url in items:
         if name in CRAFT_CHANCES:
             chance = CRAFT_CHANCES[name]
             builder.row(InlineKeyboardButton(
@@ -157,31 +162,32 @@ async def craft_menu(message: types.Message):
         return await message.reply("❌ Нет NFT, которые можно скрафтить.")
     
     builder.row(InlineKeyboardButton(text="🔙 Закрыть", callback_data="close_craft"))
-    await message.answer("🔨 <b>КРАФТ</b>\nВыбери NFT для крафта (шанс указан):", reply_markup=builder.as_markup(), parse_mode="HTML")
+    await message.answer("🔨 <b>КРАФТ</b>\nВыбери NFT для крафта:", reply_markup=builder.as_markup(), parse_mode="HTML")
 
 @dp.callback_query(lambda c: c.data.startswith("craft_item_"))
 async def craft_start(callback: types.CallbackQuery):
     item_id = int(callback.data.split("_")[2])
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
-    c.execute("SELECT item_name, backdrop, price FROM inventory WHERE id = ? AND user_id = ?", (item_id, callback.from_user.id))
+    c.execute("SELECT item_name, backdrop, price, url FROM inventory WHERE id = ? AND user_id = ?", (item_id, callback.from_user.id))
     res = c.fetchone()
     conn.close()
     
     if not res:
         return await callback.answer("❌ NFT не найден.")
     
-    name, backdrop, price = res
+    name, backdrop, price, url = res
     chance = CRAFT_CHANCES.get(name, 0)
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔥 НАЧАТЬ КРАФТ", callback_data=f"craft_do_{item_id}"))
     
     await callback.message.edit_text(
         f"🔨 <b>КРАФТ: {name}</b>\n\n"
         f"🎨 Фон: {backdrop}\n"
         f"💰 Ценность: {price} монет\n"
         f"🎲 Шанс успеха: <b>{chance}%</b>\n\n"
-        f"Нажми, чтобы начать крафт:",
-        reply_markup=InlineKeyboardBuilder().row(
-            InlineKeyboardButton(text="🔥 НАЧАТЬ КРАФТ", callback_data=f"craft_do_{item_id}")
-        ).as_markup(),
+        f"Нажми, чтобы начать:",
+        reply_markup=builder.as_markup(),
         parse_mode="HTML"
     )
 
@@ -189,27 +195,25 @@ async def craft_start(callback: types.CallbackQuery):
 async def craft_do(callback: types.CallbackQuery):
     item_id = int(callback.data.split("_")[2])
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
-    c.execute("SELECT item_name, backdrop, price FROM inventory WHERE id = ? AND user_id = ?", (item_id, callback.from_user.id))
+    c.execute("SELECT item_name, backdrop, price, url FROM inventory WHERE id = ? AND user_id = ?", (item_id, callback.from_user.id))
     res = c.fetchone()
     
     if not res:
         conn.close()
         return await callback.answer("❌ NFT не найден.")
     
-    name, backdrop, price = res
+    name, backdrop, price, url = res
     chance = CRAFT_CHANCES.get(name, 0)
     
     await callback.message.edit_text("🔨 <b>Крафтим...</b>\n\n🔄 Плавим NFT...", parse_mode="HTML")
     await asyncio.sleep(2)
     
     if random.randint(1, 100) <= chance:
-        # Успех — улучшаем (добавляем +50 к цене)
         new_price = price + 50
         c.execute("UPDATE inventory SET price = ? WHERE id = ?", (new_price, item_id))
         conn.commit()
         await callback.message.edit_text(f"🎉 <b>УСПЕХ!</b>\nТвой <b>{name}</b> улучшен до <b>{new_price}</b> монет!", parse_mode="HTML")
     else:
-        # Провал — NFT сгорает
         c.execute("DELETE FROM inventory WHERE id = ?", (item_id,))
         conn.commit()
         await callback.message.edit_text(f"💥 <b>ПРОВАЛ!</b>\nТвой <b>{name}</b> сгорел.", parse_mode="HTML")
