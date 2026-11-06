@@ -10,13 +10,13 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-BOT_TOKEN = "9022493828:AAFa31SESmA-0iaB454SNASoyoB2inh3hCg"
+BOT_TOKEN = "9022493828:AAFYqDbox0DyFSyCMg4vp58fGktN9eEC5Ck"
 ADMIN_ID = 8907438590
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
-# --- МАГАЗИН С ЛИМИТАМИ ---
+# --- МАГАЗИН ---
 SHOP_ITEMS = {
     "TimelessBook #49409": {"price_rub": 150, "limit": 130, "url": "https://t.me/nft/TimelessBook-49409", "backdrop": "Strawberry"},
     "TimelessBook #6545": {"price_rub": 120, "limit": 80, "url": "https://t.me/nft/TimelessBook-6545", "backdrop": "Shamrock Green"},
@@ -36,7 +36,6 @@ CARD_ITEMS = [
     {"name": "TimelessBook #53434", "backdrop": "French Violet", "price_rub": 180, "url": "https://t.me/nft/TimelessBook-53434"},
 ]
 
-# --- NFT ДЛЯ УЛУЧШЕНИЯ (ЦЕЛИ КРАФТА) ---
 UPGRADE_ITEMS = {
     "KhabibsPapakha #22922": {"price_rub": 800, "url": "https://t.me/nft/KhabibsPapakha-22922", "backdrop": "Black"},
     "KhabibsPapakha #12396": {"price_rub": 600, "url": "https://t.me/nft/KhabibsPapakha-12396", "backdrop": "Unknown"},
@@ -68,6 +67,14 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS shop_sold (
                  item_name TEXT PRIMARY KEY,
                  sold_count INTEGER DEFAULT 0)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS market (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 seller_id INTEGER,
+                 item_name TEXT,
+                 backdrop TEXT,
+                 price_rub INTEGER,
+                 url TEXT,
+                 status TEXT DEFAULT 'active')''')
     for name in SHOP_ITEMS:
         c.execute("INSERT OR IGNORE INTO shop_sold (item_name, sold_count) VALUES (?, 0)", (name,))
     conn.commit(); conn.close()
@@ -131,26 +138,120 @@ async def start(message: types.Message):
     builder.row(InlineKeyboardButton(text="👤 Профиль", callback_data="profile"))
     builder.row(InlineKeyboardButton(text="🏆 Таблица лидеров", callback_data="top"))
     builder.row(InlineKeyboardButton(text="🔨 Крафт", callback_data="craft"))
+    builder.row(InlineKeyboardButton(text="🏪 Рынок", callback_data="market"))
     await message.answer("👋 Привет! Выбери действие:", reply_markup=builder.as_markup())
+
+# --- РЫНОК (P2P) ---
+@dp.callback_query(lambda c: c.data == "market")
+async def market_menu(callback: types.CallbackQuery):
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🛒 Купить NFT", callback_data="market_buy_list"))
+    builder.row(InlineKeyboardButton(text="💰 Продать NFT", callback_data="market_sell_list"))
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back"))
+    await callback.message.edit_text("🏪 <b>РЫНОК NFT</b>\nВыбери действие:", reply_markup=builder.as_markup(), parse_mode="HTML")
+
+# --- КУПИТЬ НА РЫНКЕ ---
+@dp.callback_query(lambda c: c.data == "market_buy_list")
+async def market_buy_list(callback: types.CallbackQuery):
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("SELECT id, seller_id, item_name, backdrop, price_rub FROM market WHERE status = 'active'")
+    lots = c.fetchall(); conn.close()
+    
+    if not lots:
+        return await callback.message.edit_text("🏪 Рынок пуст. Никто ничего не продает.")
+    
+    text = "🏪 <b>ЛОТЫ НА РЫНКЕ</b>\n\n"
+    builder = InlineKeyboardBuilder()
+    for lot_id, seller_id, name, backdrop, price in lots:
+        text += f"📦 <b>{name}</b>\n🎨 {backdrop}\n💰 {price} руб.\n👤 Продавец: {seller_id}\n\n"
+        builder.row(InlineKeyboardButton(text=f"Купить {name} за {price} руб.", callback_data=f"market_buy_{lot_id}"))
+    
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="market"))
+    await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+@dp.callback_query(lambda c: c.data.startswith("market_buy_"))
+async def market_buy(callback: types.CallbackQuery):
+    lot_id = int(callback.data.split("_")[2])
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("SELECT seller_id, item_name, backdrop, price_rub, url FROM market WHERE id = ? AND status = 'active'", (lot_id,))
+    lot = c.fetchone()
+    
+    if not lot:
+        conn.close()
+        return await callback.answer("❌ Лот уже продан!", show_alert=True)
+    
+    seller_id, name, backdrop, price, url = lot
+    
+    if seller_id == callback.from_user.id:
+        conn.close()
+        return await callback.answer("❌ Это твой лот!", show_alert=True)
+    
+    bal, _, _, _, _, _, _ = get_user(callback.from_user.id)
+    if bal < price:
+        conn.close()
+        return await callback.answer(f"❌ Мало рублей! Нужно {price}.", show_alert=True)
+    
+    # Транзакция
+    update_balance(callback.from_user.id, -price)
+    update_balance(seller_id, price)
+    add_nft_to_inv(callback.from_user.id, name, backdrop, price, url)
+    c.execute("UPDATE market SET status = 'sold' WHERE id = ?", (lot_id,))
+    conn.commit(); conn.close()
+    
+    await callback.answer(f"✅ Куплено {name} за {price} руб.!", show_alert=True)
+    await market_buy_list(callback)
+
+# --- ПРОДАТЬ НА РЫНКЕ ---
+@dp.callback_query(lambda c: c.data == "market_sell_list")
+async def market_sell_list(callback: types.CallbackQuery):
+    items = get_inv(callback.from_user.id)
+    if not items:
+        return await callback.message.edit_text("🎒 У тебя нет NFT для продажи.")
+    
+    text = "💰 <b>ВЫБЕРИ NFT ДЛЯ ПРОДАЖИ</b>\n\n"
+    builder = InlineKeyboardBuilder()
+    for item_id, name, backdrop, price, url in items:
+        text += f"📦 <b>{name}</b> ({backdrop}) — {price} руб.\n"
+        builder.row(InlineKeyboardButton(text=f"Продать {name} за {price} руб.", callback_data=f"market_sell_{item_id}"))
+    
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="market"))
+    await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+@dp.callback_query(lambda c: c.data.startswith("market_sell_"))
+async def market_sell(callback: types.CallbackQuery):
+    item_id = int(callback.data.split("_")[2])
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("SELECT item_name, backdrop, price_rub, url FROM inventory WHERE id = ? AND user_id = ?", (item_id, callback.from_user.id))
+    res = c.fetchone()
+    
+    if not res:
+        conn.close()
+        return await callback.answer("❌ NFT не найден.")
+    
+    name, backdrop, price, url = res
+    
+    # Удаляем из инвентаря и ставим на рынок
+    c.execute("DELETE FROM inventory WHERE id = ?", (item_id,))
+    c.execute("INSERT INTO market (seller_id, item_name, backdrop, price_rub, url, status) VALUES (?, ?, ?, ?, ?, 'active')", 
+              (callback.from_user.id, name, backdrop, price, url))
+    conn.commit(); conn.close()
+    
+    await callback.answer(f"✅ {name} выставлен на рынок за {price} руб.!", show_alert=True)
+    await market_sell_list(callback)
 
 # --- МАГАЗИН ---
 @dp.callback_query(lambda c: c.data == "shop")
 async def shop_menu(callback: types.CallbackQuery):
     text = "🛒 <b>МАГАЗИН NFT</b>\n\n"
     builder = InlineKeyboardBuilder()
-    
     for name, data in SHOP_ITEMS.items():
         sold = get_sold_count(name)
-        limit = data["limit"]
-        left = limit - sold
-        
-        text += f"📦 <b>{name}</b>\n💰 {data['price_rub']} руб.\n📦 {sold}/{limit}\n\n"
-        
+        left = data["limit"] - sold
+        text += f"📦 <b>{name}</b>\n💰 {data['price_rub']} руб.\n📦 {sold}/{data['limit']}\n\n"
         if left > 0:
             builder.row(InlineKeyboardButton(text=f"👀 Посмотреть {name}", callback_data=f"view_{name}"))
         else:
             builder.row(InlineKeyboardButton(text=f"❌ {name} — Распродано", callback_data="noop"))
-    
     builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back"))
     await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
@@ -160,19 +261,11 @@ async def view_nft(callback: types.CallbackQuery):
     data = SHOP_ITEMS.get(name)
     if not data:
         return await callback.answer("❌ Нет такого NFT.", show_alert=True)
-    
     sold = get_sold_count(name)
     left = data["limit"] - sold
-    
     if left <= 0:
         return await callback.answer("❌ Этот NFT распродан!", show_alert=True)
-    
-    text = (f"🖼 <b>{name}</b>\n\n"
-            f"🎨 Фон: <b>{data['backdrop']}</b>\n"
-            f"💰 Цена: <b>{data['price_rub']} руб.</b>\n"
-            f"📦 Осталось: {left}/{data['limit']}\n\n"
-            f"<a href='{data['url']}'>🔗 Посмотреть в Telegram</a>")
-    
+    text = (f"🖼 <b>{name}</b>\n\n🎨 Фон: <b>{data['backdrop']}</b>\n💰 Цена: <b>{data['price_rub']} руб.</b>\n📦 Осталось: {left}/{data['limit']}\n\n<a href='{data['url']}'>🔗 Посмотреть в Telegram</a>")
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text=f"💰 Купить за {data['price_rub']} руб.", callback_data=f"buy_{name}"))
     builder.row(InlineKeyboardButton(text="🔙 Назад в магазин", callback_data="shop"))
@@ -184,20 +277,16 @@ async def buy_nft(callback: types.CallbackQuery):
     data = SHOP_ITEMS.get(name)
     if not data:
         return await callback.answer("❌ Нет такого NFT.", show_alert=True)
-    
     sold = get_sold_count(name)
     if sold >= data["limit"]:
         return await callback.answer("❌ Этот NFT уже распродан!", show_alert=True)
-    
     bal, _, _, _, _, _, _ = get_user(callback.from_user.id)
     if bal < data["price_rub"]:
         return await callback.answer(f"❌ Мало рублей! Нужно {data['price_rub']}.", show_alert=True)
-    
     update_balance(callback.from_user.id, -data["price_rub"])
     add_nft_to_inv(callback.from_user.id, name, data["backdrop"], data["price_rub"], data["url"])
     increment_sold(name)
     update_stat(callback.from_user.id, "nft_bought", 1)
-    
     await callback.answer(f"✅ Куплено {name}!", show_alert=True)
     await shop_menu(callback)
 
@@ -206,18 +295,15 @@ async def buy_nft(callback: types.CallbackQuery):
 async def profile(callback: types.CallbackQuery):
     bal, total_earned, _, _, cards_opened, nft_bought, duels_won = get_user(callback.from_user.id)
     items = get_inv(callback.from_user.id)
-    
     level = total_earned // 500
     progress = min(int((total_earned % 500) / 500 * 10), 10)
     bar = "█" * progress + "░" * (10 - progress)
-    
     text = (f"╔══════════════════╗\n   👤 <b>ТВОЙ ПРОФИЛЬ</b>\n╚══════════════════╝\n\n"
             f"🆔 ID: <code>{callback.from_user.id}</code>\n📈 Уровень: <b>{level}</b>\n"
             f"[{bar}] {total_earned % 500}/{500}\n\n"
             f"💰 Баланс: <b>{bal} руб.</b>\n🎒 NFT: <b>{len(items)}</b> шт.\n"
             f"🎴 Открыто карточек: <b>{cards_opened}</b>\n🛒 Куплено NFT: <b>{nft_bought}</b>\n"
             f"⚔️ Побед в дуэлях: <b>{duels_won}</b>\n\n")
-    
     builder = InlineKeyboardBuilder()
     if items:
         text += "<b>Твои NFT:</b>\n"
@@ -227,7 +313,6 @@ async def profile(callback: types.CallbackQuery):
             text += f"<i>... и еще {len(items) - 5}</i>\n"
     else:
         text += "🎒 У тебя пока нет NFT."
-    
     builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back"))
     await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
@@ -237,17 +322,14 @@ async def top_leaderboard(callback: types.CallbackQuery):
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
     c.execute("SELECT username, first_name, total_earned FROM users ORDER BY total_earned DESC LIMIT 10")
     top = c.fetchall(); conn.close()
-    
     if not top:
         return await callback.message.edit_text("Пока нет игроков.")
-    
     text = "🏆 <b>ТАБЛИЦА ЛИДЕРОВ</b>\n\n<blockquote>"
     for i, (username, first_name, earned) in enumerate(top, 1):
         medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
         name = f"@{username}" if username else first_name
         text += f"{medal} {name} — <b>{earned} руб.</b>\n"
     text += "</blockquote>"
-    
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back"))
     await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -258,11 +340,9 @@ async def open_card(message: types.Message):
     user_id = message.from_user.id
     bal, total_earned, last_card, _, _, _, _ = get_user(user_id)
     now = time.time()
-    
     if now - last_card < 900:
         left = 900 - (now - last_card)
         return await message.reply(f"⏳ Жди: {int(left // 60)}м {int(left % 60)}с.")
-    
     msg = await message.reply("🎴 <b>Открываем карточку...</b>", parse_mode="HTML")
     try:
         await asyncio.sleep(1)
@@ -271,21 +351,15 @@ async def open_card(message: types.Message):
         await msg.edit_text("✨ <b>Почти готово...</b>", parse_mode="HTML")
         await asyncio.sleep(1)
     except: pass
-    
     nft = random.choice(CARD_ITEMS)
     rub_reward = random.randint(10, 100)
     update_balance(user_id, rub_reward)
     update_last_card(user_id, now)
     update_stat(user_id, "cards_opened", 1)
     add_nft_to_inv(user_id, nft["name"], nft["backdrop"], nft["price_rub"], nft["url"])
-    
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🔗 Открыть NFT", url=nft["url"]))
-    
-    text = (f"🎉 <b>Тебе выпал NFT!</b>\n\n🖼 <b>{nft['name']}</b>\n"
-            f"🎨 Фон: <b>{nft['backdrop']}</b>\n💰 Ценность: <b>{nft['price_rub']} руб.</b>\n\n"
-            f"💵 <b>Тебе начислено: {rub_reward} руб.!</b>")
-    
+    text = (f"🎉 <b>Тебе выпал NFT!</b>\n\n🖼 <b>{nft['name']}</b>\n🎨 Фон: <b>{nft['backdrop']}</b>\n💰 Ценность: <b>{nft['price_rub']} руб.</b>\n\n💵 <b>Тебе начислено: {rub_reward} руб.!</b>")
     try:
         await msg.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
     except:
@@ -297,23 +371,20 @@ async def daily_bonus(message: types.Message):
     user_id = message.from_user.id
     bal, _, _, last_daily, _, _, _ = get_user(user_id)
     now = time.time()
-    
     if now - last_daily < 86400:
         left = 86400 - (now - last_daily)
         return await message.reply(f"⏳ Жди: {int(left // 3600)}ч {int((left % 3600) // 60)}м.")
-    
     bonus = 50
     update_balance(user_id, bonus)
     update_last_daily(user_id, now)
     await message.reply(f"🎁 <b>ЕЖЕДНЕВНЫЙ БОНУС!</b>\nТы получил <b>{bonus} руб.</b>", parse_mode="HTML")
 
-# --- КРАФТ (ВЫБОР ЦЕЛИ С ПРОСМОТРОМ) ---
+# --- КРАФТ ---
 @dp.callback_query(lambda c: c.data == "craft")
 async def craft_menu(callback: types.CallbackQuery):
     items = get_inv(callback.from_user.id)
     if not items:
         return await callback.message.edit_text("🎒 Инвентарь пуст. Крафтить нечего.")
-    
     text = "🔨 <b>КРАФТ NFT</b>\nВыбери NFT, который хочешь улучшить:\n\n"
     builder = InlineKeyboardBuilder()
     for item_id, name, backdrop, price_rub, url in items:
@@ -325,37 +396,24 @@ async def craft_menu(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data.startswith("craft_start_"))
 async def craft_choose_target(callback: types.CallbackQuery):
     item_id = int(callback.data.split("_")[2])
-    
     text = "🎯 <b>Выбери подарок, на который хочешь улучшить свой NFT:</b>\n\n"
     builder = InlineKeyboardBuilder()
-    
     for target_name, target_data in UPGRADE_ITEMS.items():
         text += f"🎁 <b>{target_name}</b>\n💰 Ценность: {target_data['price_rub']} руб.\n🎲 Шанс успеха: <b>{CRAFT_SUCCESS_CHANCE}%</b>\n\n"
-        
-        # Кнопка для ПРОСМОТРА подарка (не для крафта)
-        builder.row(InlineKeyboardButton(text=f"👀 Посмотреть {target_name}", callback_data=f"view_upgrade_{target_name}"))
-    
+        safe_name = target_name.replace(" ", "_")
+        builder.row(InlineKeyboardButton(text=f"👀 Посмотреть {target_name}", callback_data=f"view_upgrade_{safe_name}"))
     builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="craft"))
     await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
-# --- ПРОСМОТР ЦЕЛИ КРАФТА ---
 @dp.callback_query(lambda c: c.data.startswith("view_upgrade_"))
 async def view_upgrade_nft(callback: types.CallbackQuery):
-    target_name = callback.data.replace("view_upgrade_", "")
+    safe_name = callback.data.replace("view_upgrade_", "")
+    target_name = safe_name.replace("_", " ")
     target_data = UPGRADE_ITEMS.get(target_name)
-    
     if not target_data:
         return await callback.answer("❌ Такого подарка нет.", show_alert=True)
-    
-    text = (f"🎁 <b>{target_name}</b>\n\n"
-            f"🎨 Фон: <b>{target_data['backdrop']}</b>\n"
-            f"💰 Ценность: <b>{target_data['price_rub']} руб.</b>\n"
-            f"🎲 Шанс успеха: <b>{CRAFT_SUCCESS_CHANCE}%</b>\n\n"
-            f"<a href='{target_data['url']}'>🔗 Посмотреть в Telegram</a>")
-    
+    text = (f"🎁 <b>{target_name}</b>\n\n🎨 Фон: <b>{target_data['backdrop']}</b>\n💰 Ценность: <b>{target_data['price_rub']} руб.</b>\n🎲 Шанс успеха: <b>{CRAFT_SUCCESS_CHANCE}%</b>\n\n<a href='{target_data['url']}'>🔗 Посмотреть в Telegram</a>")
     builder = InlineKeyboardBuilder()
-    # Возвращаемся к выбору цели (с ID NFT, который крафтим, но для простоты вернем в меню крафта)
-    # Лучше вернуть кнопку "Назад" к выбору цели, но для этого нужен item_id. Пока просто назад в меню крафта.
     builder.row(InlineKeyboardButton(text="🔙 Назад к выбору", callback_data="craft"))
     await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
@@ -370,6 +428,7 @@ async def back(callback: types.CallbackQuery):
     builder.row(InlineKeyboardButton(text="👤 Профиль", callback_data="profile"))
     builder.row(InlineKeyboardButton(text="🏆 Таблица лидеров", callback_data="top"))
     builder.row(InlineKeyboardButton(text="🔨 Крафт", callback_data="craft"))
+    builder.row(InlineKeyboardButton(text="🏪 Рынок", callback_data="market"))
     await callback.message.edit_text("👋 Главное меню:", reply_markup=builder.as_markup())
 
 async def main():
