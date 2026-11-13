@@ -8,7 +8,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-BOT_TOKEN = "9022493828:AAHQa69O9lHEMZtIW3YDx01LXbcj0c6dG20"
+BOT_TOKEN = "9022493828:AAExJSg9rPhXDDOHuZGQaiLlfPtEc8fvuKY"
 ADMIN_ID = 8907438590
 
 bot = Bot(BOT_TOKEN)
@@ -16,7 +16,6 @@ dp = Dispatcher()
 
 class St(StatesGroup):
     in_battle = State()
-    in_duel = State()
 
 # --- FLASK ---
 app = Flask(__name__)
@@ -47,6 +46,11 @@ def update_hp(uid, amount):
     c.execute("UPDATE users SET hp = 0 WHERE hp < 0 AND user_id = ?", (uid,))
     conn.commit(); conn.close()
 
+def update_max_hp(uid, amount):
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("UPDATE users SET max_hp = max_hp + ?, hp = hp + ? WHERE user_id = ?", (amount, amount, uid))
+    conn.commit(); conn.close()
+
 def update_coins(uid, amount):
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
     c.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (amount, uid))
@@ -54,16 +58,21 @@ def update_coins(uid, amount):
 
 def update_stats(uid, win=False):
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
-    if win: c.execute("UPDATE users SET wins = wins + 1, xp = xp + 20 WHERE user_id = ?", (uid,))
-    else: c.execute("UPDATE users SET losses = losses + 1, xp = xp + 5 WHERE user_id = ?", (uid,))
+    if win:
+        c.execute("UPDATE users SET wins = wins + 1, xp = xp + 20 WHERE user_id = ?", (uid,))
+        reward = random.randint(2, 3)
+        c.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (reward, uid))
+    else:
+        c.execute("UPDATE users SET losses = losses + 1, xp = xp + 5 WHERE user_id = ?", (uid,))
     c.execute("SELECT xp, level FROM users WHERE user_id = ?", (uid,))
     xp, lvl = c.fetchone()
-    if xp >= lvl * 100: c.execute("UPDATE users SET level = level + 1, xp = xp - ? WHERE user_id = ?", (lvl * 100, uid))
+    if xp >= lvl * 100:
+        c.execute("UPDATE users SET level = level + 1, xp = xp - ? WHERE user_id = ?", (lvl * 100, uid))
     conn.commit(); conn.close()
 
-def save_user_info(uid, uname, fname):
+def save_info(uid, un, fn):
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
-    c.execute("UPDATE users SET username = ?, first_name = ? WHERE user_id = ?", (uname, fname, uid))
+    c.execute("UPDATE users SET username = ?, first_name = ? WHERE user_id = ?", (un, fn, uid))
     conn.commit(); conn.close()
 
 # --- BOSSES ---
@@ -79,19 +88,26 @@ BOSSES = {
     "👑 Король": {"hp": 300, "damage": 40, "reward": 500},
 }
 
+# --- UPGRADES ---
+UPGRADES = [
+    {"hp": 3, "price": 8}, {"hp": 5, "price": 11}, {"hp": 9, "price": 15},
+    {"hp": 15, "price": 24}, {"hp": 18, "price": 29}, {"hp": 25, "price": 40},
+    {"hp": 30, "price": 50}, {"hp": 35, "price": 60}, {"hp": 40, "price": 75}, {"hp": 50, "price": 95},
+]
+
 # --- PROFILE ---
 @dp.message(Command("start"))
 async def start(message: types.Message):
     init_db()
-    save_user_info(message.from_user.id, message.from_user.username, message.from_user.first_name)
+    save_info(message.from_user.id, message.from_user.username, message.from_user.first_name)
     hp, max_hp, lvl, xp, coins, wins, losses, _, _ = get_user(message.from_user.id)
     needed = lvl * 100
-    progress = min(int((xp / needed) * 10), 10)
-    bar = "█" * progress + "░" * (10 - progress)
+    bar = "█" * min(int((xp / needed) * 10), 10) + "░" * (10 - min(int((xp / needed) * 10), 10))
     text = (f"👤 <b>ПРОФИЛЬ {message.from_user.first_name}</b>\n\n❤️ HP: <b>{hp}/{max_hp}</b>\n📈 Уровень: <b>{lvl}</b>\n[{bar}] {xp}/{needed}\n\n💰 Монеты: <b>{coins}</b>\n🏆 Победы: <b>{wins}</b> | 💀 Поражения: <b>{losses}</b>\n\nВыбери действие:")
     b = InlineKeyboardBuilder()
     b.row(InlineKeyboardButton(text="👹 Боссы", callback_data="bosses"))
     b.row(InlineKeyboardButton(text="⚔️ Дуэль 1 на 1", callback_data="duel_menu"))
+    b.row(InlineKeyboardButton(text="🛒 Магазин улучшений", callback_data="shop_hp"))
     b.row(InlineKeyboardButton(text="🏆 Топ побед", callback_data="top_wins"))
     b.row(InlineKeyboardButton(text="💀 Топ поражений", callback_data="top_losses"))
     b.row(InlineKeyboardButton(text="🩹 Лечение (10 монет)", callback_data="heal"))
@@ -101,16 +117,39 @@ async def start(message: types.Message):
 async def profile_back(callback: types.CallbackQuery):
     hp, max_hp, lvl, xp, coins, wins, losses, _, _ = get_user(callback.from_user.id)
     needed = lvl * 100
-    progress = min(int((xp / needed) * 10), 10)
-    bar = "█" * progress + "░" * (10 - progress)
+    bar = "█" * min(int((xp / needed) * 10), 10) + "░" * (10 - min(int((xp / needed) * 10), 10))
     text = (f"👤 <b>ПРОФИЛЬ {callback.from_user.first_name}</b>\n\n❤️ HP: <b>{hp}/{max_hp}</b>\n📈 Уровень: <b>{lvl}</b>\n[{bar}] {xp}/{needed}\n\n💰 Монеты: <b>{coins}</b>\n🏆 Победы: <b>{wins}</b> | 💀 Поражения: <b>{losses}</b>\n\nВыбери действие:")
     b = InlineKeyboardBuilder()
     b.row(InlineKeyboardButton(text="👹 Боссы", callback_data="bosses"))
     b.row(InlineKeyboardButton(text="⚔️ Дуэль 1 на 1", callback_data="duel_menu"))
+    b.row(InlineKeyboardButton(text="🛒 Магазин улучшений", callback_data="shop_hp"))
     b.row(InlineKeyboardButton(text="🏆 Топ побед", callback_data="top_wins"))
     b.row(InlineKeyboardButton(text="💀 Топ поражений", callback_data="top_losses"))
     b.row(InlineKeyboardButton(text="🩹 Лечение (10 монет)", callback_data="heal"))
     await callback.message.edit_text(text, reply_markup=b.as_markup(), parse_mode="HTML")
+
+# --- SHOP HP ---
+@dp.callback_query(lambda c: c.data == "shop_hp")
+async def shop_hp(callback: types.CallbackQuery):
+    text = "🛒 <b>МАГАЗИН УЛУЧШЕНИЙ HP</b>\n\n"
+    b = InlineKeyboardBuilder()
+    for up in UPGRADES:
+        text += f"❤️ +{up['hp']} HP — <b>{up['price']} монет</b>\n"
+        b.row(InlineKeyboardButton(text=f"+{up['hp']} HP ({up['price']} монет)", callback_data=f"buy_hp_{up['hp']}_{up['price']}"))
+    b.row(InlineKeyboardButton(text="🔙 Назад", callback_data="profile_back"))
+    await callback.message.edit_text(text, reply_markup=b.as_markup(), parse_mode="HTML")
+
+@dp.callback_query(lambda c: c.data.startswith("buy_hp_"))
+async def buy_hp(callback: types.CallbackQuery):
+    parts = callback.data.split("_")
+    hp_amount, price = int(parts[2]), int(parts[3])
+    hp, max_hp, _, _, coins, _, _, _, _ = get_user(callback.from_user.id)
+    if coins < price:
+        return await callback.answer("❌ Не хватает монет!", show_alert=True)
+    update_coins(callback.from_user.id, -price)
+    update_max_hp(callback.from_user.id, hp_amount)
+    hp, max_hp, _, _, coins, _, _, _, _ = get_user(callback.from_user.id)
+    await callback.answer(f"✅ Куплено +{hp_amount} HP! Теперь: {hp}/{max_hp}", show_alert=True)
 
 # --- TOPS ---
 @dp.callback_query(lambda c: c.data == "top_wins")
@@ -154,7 +193,7 @@ async def heal(callback: types.CallbackQuery):
     hp, max_hp, _, _, coins, _, _, _, _ = get_user(callback.from_user.id)
     await callback.answer(f"🩹 +20 HP! Теперь: {hp}/{max_hp}", show_alert=True)
 
-# --- BOSSES ---
+# --- BOSSES (С ХОДОМ БОССА) ---
 @dp.callback_query(lambda c: c.data == "bosses")
 async def bosses_menu(callback: types.CallbackQuery):
     text = "👹 <b>БОССЫ</b>\n\n"
@@ -172,7 +211,7 @@ async def boss_start(callback: types.CallbackQuery, state: FSMContext):
     if not data: return await callback.answer("❌ Нет босса.", show_alert=True)
     hp, _, _, _, _, _, _, _, _ = get_user(callback.from_user.id)
     if hp <= 0: return await callback.answer("💀 Ты мертв!", show_alert=True)
-    await state.update_data(boss_name=name, boss_hp=data["hp"], player_hp=hp, boss_data=data, aimed=False, blinded=False)
+    await state.update_data(boss_name=name, boss_hp=data["hp"], player_hp=hp, boss_data=data, aimed=False)
     await state.set_state(St.in_battle)
     b = InlineKeyboardBuilder()
     b.row(InlineKeyboardButton(text="🎯 Прицелиться", callback_data="boss_aim"), InlineKeyboardButton(text="🔫 Стрелять", callback_data="boss_shoot"))
@@ -184,33 +223,40 @@ async def boss_start(callback: types.CallbackQuery, state: FSMContext):
 async def boss_action(callback: types.CallbackQuery, state: FSMContext):
     action = callback.data.replace("boss_", "")
     data = await state.get_data()
-    name, bhp, php, bdata, aimed, blinded = data['boss_name'], data['boss_hp'], data['player_hp'], data['boss_data'], data.get('aimed', False), data.get('blinded', False)
+    name, bhp, php, bdata, aimed = data['boss_name'], data['boss_hp'], data['player_hp'], data['boss_data'], data.get('aimed', False)
     if not bdata or bhp <= 0 or php <= 0: await state.clear(); return await callback.answer("Бой окончен.", show_alert=True)
     msg = ""
+    
     if action == "aim": aimed = True; msg = "🎯 Ты прицелился! Шанс попасть 90%."
     elif action == "shoot":
         hit = 0.9 if aimed else 0.5; aimed = False
         if random.random() < hit: dmg = random.randint(20, 35) * 2; bhp -= dmg; msg = f"🔫 <b>КРИТ!</b> {dmg} урона."
-        else: msg = "🔫 <b>Промах!</b>"; dmg = random.randint(5, bdata['damage']); php -= dmg; msg += f"\n👹 Босс нанес {dmg} урона."
+        else: msg = "🔫 <b>Промах!</b>"
     elif action == "blind":
-        if random.random() < 0.5: blinded = True; msg = "💥 Ты ослепил босса!"
+        if random.random() < 0.5: msg = "💥 Ты ослепил босса! Он пропустит ход."
         else: msg = "💥 Не вышло."; dmg = random.randint(5, bdata['damage']) * 2; php -= dmg; msg += f"\n👹 Босс нанес {dmg} урона (x2)."
     elif action == "dodge": msg = "💨 Ты уклонился!"; dmg = random.randint(5, bdata['damage']) // 2; php -= dmg; msg += f"\n👹 Босс нанес {dmg} урона."
     elif action == "surrender": await state.clear(); update_stats(callback.from_user.id, win=False); return await callback.message.edit_text("🏳️ Сдался.", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="profile_back")).as_markup())
+    
+    if bhp > 0 and action != "blind":
+        if random.random() < 0.3: msg += "\n👹 Босс промахнулся!"
+        else: dmg = random.randint(5, bdata['damage']); php -= dmg; msg += f"\n👹 Босс нанес {dmg} урона."
+    
     if bhp <= 0:
         update_stats(callback.from_user.id, win=True); update_coins(callback.from_user.id, bdata['reward']); update_hp(callback.from_user.id, php - data['player_hp']); await state.clear()
         return await callback.message.edit_text(f"🎉 <b>Победа!</b>\n💰 +{bdata['reward']} монет!", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="profile_back")).as_markup(), parse_mode="HTML")
     elif php <= 0:
         update_stats(callback.from_user.id, win=False); update_hp(callback.from_user.id, -data['player_hp']); await state.clear()
         return await callback.message.edit_text(f"💀 <b>Поражение.</b>", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="profile_back")).as_markup(), parse_mode="HTML")
-    await state.update_data(boss_hp=bhp, player_hp=php, aimed=aimed, blinded=blinded)
+    
+    await state.update_data(boss_hp=bhp, player_hp=php, aimed=aimed)
     b = InlineKeyboardBuilder()
     b.row(InlineKeyboardButton(text="🎯 Прицелиться", callback_data="boss_aim"), InlineKeyboardButton(text="🔫 Стрелять", callback_data="boss_shoot"))
     b.row(InlineKeyboardButton(text="💥 Ослепить", callback_data="boss_blind"), InlineKeyboardButton(text="💨 Уклониться", callback_data="boss_dodge"))
     b.row(InlineKeyboardButton(text="🏳️ Сдаться", callback_data="boss_surrender"))
     await callback.message.edit_text(f"⚔️ <b>Бой с {name}</b>\n\n👹 HP босса: {bhp}\n❤️ Твое HP: {php}\n\n{msg}\n\nВыбери действие:", reply_markup=b.as_markup(), parse_mode="HTML")
 
-# --- DUELS (PvP) ---
+# --- DUELS ---
 @dp.callback_query(lambda c: c.data == "duel_menu")
 async def duel_menu(callback: types.CallbackQuery):
     await callback.message.edit_text("⚔️ <b>ДУЭЛЬ 1 НА 1</b>\n\nОтветь на сообщение игрока командой /duel, чтобы вызвать его на бой.", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="profile_back")).as_markup(), parse_mode="HTML")
@@ -251,7 +297,9 @@ async def accept_duel(callback: types.CallbackQuery):
     if callback.from_user.id != op_id: conn.close(); return await callback.answer("❌ Не твой вызов.", show_alert=True)
     c.execute("UPDATE duels SET status = 'active', turn_id = ? WHERE id = ?", (ch_id, did)); conn.commit(); conn.close()
     await callback.message.edit_text("✅ Ты принял дуэль! Жди своего хода.")
-    b = InlineKeyboardBuilder().row(InlineKeyboardButton(text="⚔️ Атаковать", callback_data=f"atk_{did}"))
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="🎯 Прицелиться", callback_data=f"d_aim_{did}"), InlineKeyboardButton(text="🔫 Стрелять", callback_data=f"d_shoot_{did}"))
+    b.row(InlineKeyboardButton(text="💥 Ослепить", callback_data=f"d_blind_{did}"))
     await bot.send_message(ch_id, "⚔️ Дуэль началась! Твой ход:", reply_markup=b.as_markup())
 
 @dp.callback_query(lambda c: c.data.startswith("decline_duel_"))
@@ -261,18 +309,37 @@ async def decline_duel(callback: types.CallbackQuery):
     c.execute("UPDATE duels SET status = 'declined' WHERE id = ?", (did,)); conn.commit(); conn.close()
     await callback.message.edit_text("❌ Отклонено.")
 
-@dp.callback_query(lambda c: c.data.startswith("atk_"))
-async def atk(callback: types.CallbackQuery):
-    did = int(callback.data.split("_")[1])
+@dp.callback_query(lambda c: c.data.startswith("d_"))
+async def duel_action(callback: types.CallbackQuery):
+    parts = callback.data.split("_")
+    action, did = parts[1], int(parts[2])
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
     c.execute("SELECT ch_id, op_id, ch_hp, op_hp, turn_id FROM duels WHERE id = ? AND status = 'active'", (did,))
     res = c.fetchone()
     if not res: conn.close(); return await callback.answer("❌ Не найдена.", show_alert=True)
     ch, op, chp, opp, turn = res
     if callback.from_user.id != turn: conn.close(); return await callback.answer("❌ Не твой ход.", show_alert=True)
-    dmg = random.randint(10, 25)
-    if turn == ch: opp -= dmg; nturn = op
-    else: chp -= dmg; nturn = ch
+    
+    msg = ""
+    if action == "aim":
+        c.execute("UPDATE duels SET turn_id = ? WHERE id = ?", (op if turn == ch else ch, did)); conn.commit(); conn.close()
+        await callback.message.edit_text("🎯 Ты прицелился! Соперник ходит.")
+        b = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🎯 Прицелиться", callback_data=f"d_aim_{did}"), InlineKeyboardButton(text="🔫 Стрелять", callback_data=f"d_shoot_{did}")).row(InlineKeyboardButton(text="💥 Ослепить", callback_data=f"d_blind_{did}"))
+        try: await bot.send_message(op if turn == ch else ch, "⚔️ Твой ход!", reply_markup=b.as_markup())
+        except: pass
+        return
+    
+    elif action == "shoot":
+        dmg = random.randint(15, 30)
+        if turn == ch: opp -= dmg; nturn = op
+        else: chp -= dmg; nturn = ch
+        msg = f"🔫 Ты нанес {dmg} урона!"
+    elif action == "blind":
+        if random.random() < 0.5: msg = "💥 Ты ослепил соперника! Он пропустит ход."; nturn = turn
+        else: msg = "💥 Не удалось."; dmg = random.randint(10, 20); 
+        if turn == ch: opp -= dmg; nturn = op
+        else: chp -= dmg; nturn = ch
+    
     if opp <= 0 or chp <= 0:
         c.execute("UPDATE duels SET status = 'finished' WHERE id = ?", (did,)); conn.commit(); conn.close()
         win, lose = (ch, op) if opp <= 0 else (op, ch)
@@ -282,10 +349,13 @@ async def atk(callback: types.CallbackQuery):
             await bot.send_message(lose, "💀 Ты проиграл.")
         except: pass
         return await callback.message.edit_text("🏆 Дуэль окончена!")
+    
     c.execute("UPDATE duels SET ch_hp = ?, op_hp = ?, turn_id = ? WHERE id = ?", (chp, opp, nturn, did)); conn.commit(); conn.close()
-    await callback.message.edit_text(f"⚔️ Ты нанес {dmg} урона! Соперник: {max(0, opp if turn == ch else chp)} HP.")
-    b = InlineKeyboardBuilder().row(InlineKeyboardButton(text="⚔️ Атаковать", callback_data=f"atk_{did}"))
-    try: await bot.send_message(nturn, "⚔️ Твой ход:", reply_markup=b.as_markup())
+    await callback.message.edit_text(f"{msg}\n\nСоперник: {max(0, opp if turn == ch else chp)} HP.")
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="🎯 Прицелиться", callback_data=f"d_aim_{did}"), InlineKeyboardButton(text="🔫 Стрелять", callback_data=f"d_shoot_{did}"))
+    b.row(InlineKeyboardButton(text="💥 Ослепить", callback_data=f"d_blind_{did}"))
+    try: await bot.send_message(nturn, "⚔️ Твой ход!", reply_markup=b.as_markup())
     except: pass
 
 # --- START ---
