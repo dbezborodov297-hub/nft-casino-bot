@@ -3,97 +3,103 @@ from threading import Thread
 from flask import Flask
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton
+from aiogram.types import InlineKeyboardButton, InputMediaPhoto
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 # --- КОНФИГУРАЦИЯ ---
-BOT_TOKEN = "9022493828:AAFDZ03KgRXYmiIGOd7BytjqJua-R8eYH08"
-ADMIN_ID = 8907438590 # ID админа для рассылки
+BOT_TOKEN = "9022493828:AAF5Ju16nCka14s543bdqcEWeuIAzP2MkKI"
+ADMIN_ID = 8907438590
+BOT_USERNAME = "Darkgram20sk_bot"  # <--- ЗАМЕНИ НА ЮЗЕРНЕЙМ ТВОЕГО БОТА (без @)
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
-# Состояние для хранения данных рассылки (если нужно будет расширить)
-class St(StatesGroup):
-    waiting_for_broadcast = State()
-
-# --- FLASK (Для поддержки активности на хостинге) ---
+# --- FLASK ---
 app = Flask(__name__)
 @app.route('/')
 def health(): return "OK", 200
-
-def run_flask():
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+def run_flask(): app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 # --- БАЗА ДАННЫХ ---
 def init_db():
     conn = sqlite3.connect('bot.db')
     c = conn.cursor()
-    # Упрощенная таблица: только профиль и время последнего бонуса
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY, 
         username TEXT, 
         first_name TEXT, 
         coins INTEGER DEFAULT 0,
-        last_daily REAL DEFAULT 0
+        tokens INTEGER DEFAULT 0,
+        last_daily REAL DEFAULT 0,
+        referrer_id INTEGER DEFAULT 0
     )''')
-    
-    # Проверка наличия колонок для старых баз
     try:
-        c.execute("ALTER TABLE users ADD COLUMN last_daily REAL DEFAULT 0")
+        c.execute("ALTER TABLE users ADD COLUMN tokens INTEGER DEFAULT 0")
+        c.execute("ALTER TABLE users ADD COLUMN referrer_id INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
-        
-    conn.commit()
-    conn.close()
+    conn.commit(); conn.close()
 
 def get_or_create_user(uid, un=None, fn=None):
-    conn = sqlite3.connect('bot.db')
-    c = conn.cursor()
-    c.execute("SELECT user_id, coins, last_daily FROM users WHERE user_id = ?", (uid,))
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("SELECT user_id, coins, tokens, last_daily, referrer_id FROM users WHERE user_id = ?", (uid,))
     res = c.fetchone()
-    
     if not res:
         c.execute("INSERT INTO users (user_id, username, first_name) VALUES (?, ?, ?)", (uid, un, fn))
         conn.commit()
-        res = (uid, 0, 0)
+        res = (uid, 0, 0, 0, 0)
     elif un or fn:
-        # Обновляем имя, если оно изменилось
         c.execute("UPDATE users SET username = ?, first_name = ? WHERE user_id = ?", (un, fn, uid))
         conn.commit()
-        
     conn.close()
     return res
 
 def update_coins(uid, amount):
-    conn = sqlite3.connect('bot.db')
-    c = conn.cursor()
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
     c.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (amount, uid))
-    conn.commit()
-    conn.close()
+    conn.commit(); conn.close()
+
+def update_tokens(uid, amount):
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("UPDATE users SET tokens = tokens + ? WHERE user_id = ?", (amount, uid))
+    conn.commit(); conn.close()
 
 def update_last_daily(uid):
-    conn = sqlite3.connect('bot.db')
-    c = conn.cursor()
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
     c.execute("UPDATE users SET last_daily = ? WHERE user_id = ?", (time.time(), uid))
-    conn.commit()
+    conn.commit(); conn.close()
+
+def set_referrer(uid, ref_uid):
+    """Привязывает реферера, если его еще нет"""
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    # Проверяем, есть ли уже реферер
+    c.execute("SELECT referrer_id FROM users WHERE user_id = ?", (uid,))
+    current_ref = c.fetchone()[0]
+    
+    if current_ref == 0 and uid != ref_uid:
+        c.execute("UPDATE users SET referrer_id = ? WHERE user_id = ?", (ref_uid, uid))
+        conn.commit()
+        conn.close()
+        return True # Успешно привязали
     conn.close()
+    return False # Уже был или сам себя
 
 def get_all_users():
-    conn = sqlite3.connect('bot.db')
-    c = conn.cursor()
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
     c.execute("SELECT user_id FROM users")
     users = [row[0] for row in c.fetchall()]
     conn.close()
     return users
 
 # --- КЛАВИАТУРА ---
-def get_main_kb():
+def get_main_kb(uid):
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🎁 Получить бонус", callback_data="daily_bonus"))
-    builder.row(InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile"))
+    builder.row(InlineKeyboardButton(text="🎁 Ежедневный бонус", callback_data="daily_bonus"))
+    builder.row(InlineKeyboardButton(text="📦 Открыть кейс (5⭐)", callback_data="open_case"))
+    builder.row(InlineKeyboardButton(text="👥 Пригласить друга", callback_data=f"ref_link_{uid}"))
+    builder.row(InlineKeyboardButton(text="👤 Профиль", callback_data="profile"))
     return builder.as_markup()
 
 # --- ОБРАБОТЧИКИ ПОЛЬЗОВАТЕЛЯ ---
@@ -101,84 +107,183 @@ def get_main_kb():
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     init_db()
-    get_or_create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     
+    # Проверка реферальной ссылки
+    args = message.text.split()
+    referrer_id = None
+    if len(args) > 1 and args[1].startswith("ref_"):
+        try:
+            referrer_id = int(args[1].replace("ref_", ""))
+        except:
+            pass
+
+    user = get_or_create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
+    
+    # Если есть реферер и это не сам пользователь
+    if referrer_id and referrer_id != message.from_user.id:
+        is_new_ref = set_referrer(message.from_user.id, referrer_id)
+        if is_new_ref:
+            # Награда тому, кто пригласил
+            update_coins(referrer_id, 5) 
+            try:
+                await bot.send_message(referrer_id, f"🎉 <b>Новый реферал!</b>\nПользователь {message.from_user.first_name} перешел по твоей ссылке.\n💰 +5 Звёзд на баланс!")
+            except:
+                pass
+            # Приветствие новичку
+            await message.answer(f"👋 <b>Привет!</b>\nТы перешел по приглашению. Тебе начислен приветственный бонус!", parse_mode="HTML")
+            update_coins(message.from_user.id, 5) # Бонус новичку (опционально)
+
     text = (
         f"👋 <b>Привет, {message.from_user.first_name}!</b>\n\n"
-        f"Это бот-копилка. Забирай ежедневные бонусы и копи звёзды ⭐️.\n"
-        f"Бонус доступен каждые 12 часов."
+        f"Забирай ежедневные бонусы, открывай кейсы и приглашай друзей!"
     )
-    await message.answer(text, reply_markup=get_main_kb(), parse_mode="HTML")
+    await message.answer(text, reply_markup=get_main_kb(message.from_user.id), parse_mode="HTML")
 
 @dp.callback_query(lambda c: c.data == "profile")
 async def show_profile(callback: types.CallbackQuery):
     user_data = get_or_create_user(callback.from_user.id)
-    # user_data = (user_id, coins, last_daily)
+    # (uid, coins, tokens, last_daily, ref_id)
     coins = user_data[1]
+    tokens = user_data[2]
+    refs_count = 0 # Можно добавить подсчет количества рефов, если нужно
     
     text = (
         f"👤 <b>ТВОЙ ПРОФИЛЬ</b>\n"
         f"━━━━━━━━━━━━━━\n"
-        f"⭐️ <b>Баланс:</b> {coins}\n"
+        f"⭐️ <b>Звёзды:</b> {coins}\n"
+        f"🪙 <b>Токены:</b> {tokens}\n"
         f"━━━━━━━━━━━━━━"
     )
-    await callback.message.edit_text(text, reply_markup=get_main_kb(), parse_mode="HTML")
+    await callback.message.edit_text(text, reply_markup=get_main_kb(callback.from_user.id), parse_mode="HTML")
+
+@dp.callback_query(lambda c: c.data.startswith("ref_link_"))
+async def send_ref_link(callback: types.CallbackQuery):
+    uid = callback.from_user.id
+    link = f"https://t.me/{BOT_USERNAME}?start=ref_{uid}"
+    text = (
+        f"🔗 <b>ТВОЯ РЕФЕРАЛЬНАЯ ССЫЛКА</b>\n\n"
+        f"Отправь эту ссылку друзьям:\n"
+        f"<code>{link}</code>\n\n"
+        f"💰 За каждого друга ты получишь <b>+5 Звёзд</b>!\n"
+        f"🎁 Друг тоже получит бонус."
+    )
+    await callback.message.edit_text(text, reply_markup=get_main_kb(uid), parse_mode="HTML")
 
 @dp.callback_query(lambda c: c.data == "daily_bonus")
 async def claim_bonus(callback: types.CallbackQuery):
     user_data = get_or_create_user(callback.from_user.id)
-    last_daily = user_data[2]
+    last_daily = user_data[3]
     current_time = time.time()
-    cooldown = 12 * 60 * 60  # 12 часов
+    cooldown = 12 * 60 * 60 
     
     time_passed = current_time - last_daily
-    
     if time_passed < cooldown:
         time_left = int(cooldown - time_passed)
         hours = time_left // 3600
         minutes = (time_left % 3600) // 60
-        return await callback.answer(f"⏳ Бонус будет доступен через {hours} ч. {minutes} мин.", show_alert=True)
+        return await callback.answer(f"⏳ Бонус через {hours} ч. {minutes} мин.", show_alert=True)
     
-    # Выдача награды
     reward = random.randint(5, 20)
     update_coins(callback.from_user.id, reward)
     update_last_daily(callback.from_user.id)
     
-    text = (
-        f"🎉 <b>ПОЗДРАВЛЯЕМ!</b>\n\n"
-        f"Ты получил ежедневный бонус:\n"
-        f"⭐️ <b>+{reward} Звёзд</b>\n\n"
-        f"Приходи снова через 12 часов!"
+    await callback.message.edit_text(
+        f"🎉 <b>БОНУС ПОЛУЧЕН!</b>\n⭐️ +{reward} Звёзд", 
+        reply_markup=get_main_kb(callback.from_user.id), 
+        parse_mode="HTML"
     )
-    await callback.message.edit_text(text, reply_markup=get_main_kb(), parse_mode="HTML")
+
+# --- КЕЙС С АНИМАЦИЕЙ ---
+
+CASE_ITEMS = [
+    {"name": "+18 Звёзд", "chance": 5.8, "type": "coins", "val": 18},
+    {"name": "+11 Звёзд", "chance": 9.8, "type": "coins", "val": 11},
+    {"name": "+6 Звёзд",  "chance": 11.3, "type": "coins", "val": 6},
+    {"name": "2 Токена",  "chance": 34.7, "type": "tokens", "val": 2},
+    # Остаток до 100% (38.4%) можно сделать пустым или утешительным призом
+    {"name": "Пусто...",   "chance": 38.4, "type": "none", "val": 0}, 
+]
+
+@dp.callback_query(lambda c: c.data == "open_case")
+async def open_case_start(callback: types.CallbackQuery):
+    uid = callback.from_user.id
+    user = get_or_create_user(uid)
+    balance = user[1]
+    
+    if balance < 5:
+        return await callback.answer("❌ Недостаточно звёзд! Нужно 5 ⭐", show_alert=True)
+    
+    # Списываем деньги
+    update_coins(uid, -5)
+    
+    # Запускаем анимацию
+    anim_texts = [
+        "📦 Открываем кейс...",
+        "📦 Крутим рулетку...",
+        "📦 Ищем приз...",
+        "✨ Почти готово...",
+    ]
+    
+    msg = await callback.message.edit_text("📦 Открываем кейс...")
+    
+    for txt in anim_texts:
+        await asyncio.sleep(0.6)
+        try:
+            await msg.edit_text(txt)
+        except:
+            pass
+            
+    # Определение выигрыша
+    rand = random.uniform(0, 100)
+    cumulative = 0
+    prize = CASE_ITEMS[-1] # По умолчанию последний (пусто)
+    
+    for item in CASE_ITEMS:
+        cumulative += item['chance']
+        if rand <= cumulative:
+            prize = item
+            break
+            
+    # Выдача приза
+    win_text = ""
+    if prize['type'] == 'coins':
+        update_coins(uid, prize['val'])
+        win_text = f"⭐️ +{prize['val']} Звёзд"
+    elif prize['type'] == 'tokens':
+        update_tokens(uid, prize['val'])
+        win_text = f"🪙 +{prize['val']} Токена"
+    else:
+        win_text = "😔 Ничего..."
+
+    final_text = (
+        f"🎰 <b>РЕЗУЛЬТАТ ОТКРЫТИЯ</b>\n\n"
+        f"Тебе выпало:\n"
+        f"🎁 <b>{prize['name']}</b>\n\n"
+        f"{win_text}"
+    )
+    
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="🔄 Ещё раз (5⭐)", callback_data="open_case"))
+    b.row(InlineKeyboardButton(text="🔙 В меню", callback_data="profile"))
+    
+    await msg.edit_text(final_text, reply_markup=b.as_markup(), parse_mode="HTML")
+
 
 # --- РАССЫЛКА ДЛЯ АДМИНА ---
-
 @dp.message(Command("send"), lambda msg: msg.from_user.id == ADMIN_ID)
 async def admin_broadcast(message: types.Message):
-    # Проверяем, есть ли текст или фото/видео
     content_type = message.content_type
-    
     if content_type == 'text':
         text_to_send = message.text.replace("/send", "").strip()
-        if not text_to_send:
-            return await message.reply("❌ Введите текст после команды /send")
-    elif content_type in ['photo', 'video', 'document', 'sticker']:
+    elif content_type in ['photo', 'video']:
         text_to_send = message.caption if message.caption else ""
     else:
-        return await message.reply("❌ Поддерживается только текст, фото или видео.")
+        return await message.reply("❌ Только текст или фото/видео.")
 
     users = get_all_users()
-    total = len(users)
-    
-    if total == 0:
-        return await message.reply("❌ В базе нет пользователей.")
-        
-    status_msg = await message.reply(f"🚀 Начинаю рассылку для {total} пользователей...")
+    status_msg = await message.reply(f"🚀 Рассылка для {len(users)} пользователей...")
     
     success = 0
-    failed = 0
-    
     for uid in users:
         try:
             if content_type == 'text':
@@ -187,36 +292,19 @@ async def admin_broadcast(message: types.Message):
                 await bot.send_photo(uid, message.photo[-1].file_id, caption=text_to_send, parse_mode="HTML")
             elif content_type == 'video':
                 await bot.send_video(uid, message.video.file_id, caption=text_to_send, parse_mode="HTML")
-            elif content_type == 'document':
-                await bot.send_document(uid, message.document.file_id, caption=text_to_send, parse_mode="HTML")
-            elif content_type == 'sticker':
-                await bot.send_sticker(uid, message.sticker.file_id)
-            
             success += 1
-        except Exception as e:
-            failed += 1
-            # Можно раскомментировать для отладки
-            # print(f"Error sending to {uid}: {e}")
-        
-        # Небольшая задержка, чтобы не спамить API слишком быстро
+        except:
+            pass
         await asyncio.sleep(0.05)
         
-    await status_msg.edit_text(
-        f"✅ <b>Рассылка завершена!</b>\n\n"
-        f"👥 Всего пользователей: {total}\n"
-        f"📩 Доставлено: {success}\n"
-        f"❌ Ошибок: {failed}"
-    )
+    await status_msg.edit_text(f"✅ Готово! Доставлено: {success}/{len(users)}")
 
 # --- ЗАПУСК ---
 async def main():
     init_db()
     await bot.delete_webhook(drop_pending_updates=True)
-    
-    # Запускаем Flask в отдельном потоке
     Thread(target=run_flask, daemon=True).start()
-    
-    print("🚀 Бот запущен! Ожидаю сообщений...")
+    print("🚀 Бот запущен!")
     await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
