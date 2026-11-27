@@ -9,9 +9,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 # --- КОНФИГУРАЦИЯ ---
-BOT_TOKEN = "9022493828:AAF7mGAL942aYO-m9DhtfzimuVCLIJXGZOI"
+BOT_TOKEN = "9022493828:AAFD1NZCQun8uK4bCzxlkm9mBaw0cN5JBFo"
 ADMIN_ID = 8907438590
-BOT_USERNAME = "Darkgram20sk_bot"  # <--- ЗАМЕНИ НА ЮЗЕРНЕЙМ ТВОЕГО БОТА
+BOT_USERNAME = "Darkgram20sk_bot" #<--- ЗАМЕНИ НА ЮЗЕРНЕЙМ ТВОЕГО БОТА
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
@@ -64,7 +64,7 @@ def get_or_create_user(uid, un=None, fn=None):
 def update_coins(uid, amount):
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
     c.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (amount, uid))
-    # Добавляем XP за оборот звёзд (получение или трата)
+    c.execute("UPDATE users SET coins = 0 WHERE coins < 0 AND user_id = ?", (uid,))
     if amount > 0:
         add_xp(uid, amount)
     conn.commit(); conn.close()
@@ -80,22 +80,17 @@ def update_last_daily(uid):
     conn.commit(); conn.close()
 
 def add_xp(uid, amount):
-    """Добавляет XP и проверяет левелап"""
     conn = sqlite3.connect('bot.db'); c = conn.cursor()
     c.execute("SELECT level, xp FROM users WHERE user_id = ?", (uid,))
     level, xp = c.fetchone()
-    
     xp += amount
-    
-    # Проверка левелапа (максимум 20 уровень)
     while level < 20:
-        needed_xp = level * 5000  # Прогрессивная шкала
+        needed_xp = level * 5000
         if xp >= needed_xp:
             xp -= needed_xp
             level += 1
         else:
             break
-    
     c.execute("UPDATE users SET level = ?, xp = ? WHERE user_id = ?", (level, xp, uid))
     conn.commit(); conn.close()
     return level
@@ -119,20 +114,36 @@ def get_all_users():
     conn.close()
     return users
 
+def get_top_coins(limit=10):
+    conn = sqlite3.connect('bot.db'); c = conn.cursor()
+    c.execute("SELECT username, first_name, coins FROM users ORDER BY coins DESC LIMIT ?", (limit,))
+    top = c.fetchall()
+    conn.close()
+    return top
+
 # --- КЛАВИАТУРА ---
 def get_main_kb(uid):
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🎁 Ежедневный бонус", callback_data="daily_bonus"))
     builder.row(InlineKeyboardButton(text="📦 Открыть кейс (5⭐)", callback_data="open_case"))
     builder.row(InlineKeyboardButton(text="🧊 Льдины (Игра)", callback_data="ice_game_menu"))
+    builder.row(InlineKeyboardButton(text="🏆 Таблица лидеров", callback_data="top_coins"))
     builder.row(InlineKeyboardButton(text="👥 Пригласить друга", callback_data=f"ref_link_{uid}"))
     builder.row(InlineKeyboardButton(text="👤 Профиль", callback_data="profile"))
     return builder.as_markup()
 
+# --- ХЕЛПЕР: СБРОС FSM ПРИ ПЕРЕХОДЕ В МЕНЮ (ИСПРАВЛЕНИЕ ЗАВИСАНИЯ) ---
+async def safe_reset_state(callback: types.CallbackQuery, state: FSMContext):
+    """Сбрасывает FSM состояние, если оно активно, чтобы кнопки не зависали"""
+    current_state = await state.get_state()
+    if current_state is not None:
+        await state.clear()
+
 # --- ОБРАБОТЧИКИ ПОЛЬЗОВАТЕЛЯ ---
 
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()  # Сбрасываем состояние при /start
     init_db()
     args = message.text.split()
     referrer_id = None
@@ -142,15 +153,17 @@ async def cmd_start(message: types.Message):
         except:
             pass
 
-    user = get_or_create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
+    get_or_create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     
     if referrer_id and referrer_id != message.from_user.id:
         is_new_ref = set_referrer(message.from_user.id, referrer_id)
         if is_new_ref:
             update_coins(referrer_id, 5)
             try:
-                # ИСПРАВЛЕНО: убран лишний </b>
-                await bot.send_message(referrer_id, f"🎉 <b>Новый реферал!</b>\nПользователь {message.from_user.first_name} перешел по твоей ссылке.\n💰 +5 Звёзд на баланс!")
+                await bot.send_message(referrer_id, 
+                    f"🎉 <b>Новый реферал!</b>\n"
+                    f"Пользователь {message.from_user.first_name} перешел по твоей ссылке.\n"
+                    f"💰 +5 Звёзд на баланс!")
             except:
                 pass
             await message.answer(f"👋 <b>Привет!</b>\nТы перешел по приглашению. Тебе начислен приветственный бонус!", parse_mode="HTML")
@@ -163,9 +176,9 @@ async def cmd_start(message: types.Message):
     await message.answer(text, reply_markup=get_main_kb(message.from_user.id), parse_mode="HTML")
 
 @dp.callback_query(lambda c: c.data == "profile")
-async def show_profile(callback: types.CallbackQuery):
+async def show_profile(callback: types.CallbackQuery, state: FSMContext):
+    await safe_reset_state(callback, state)
     user_data = get_or_create_user(callback.from_user.id)
-    # (uid, coins, tokens, last_daily, ref_id, level, xp)
     coins = user_data[1]
     tokens = user_data[2]
     level = user_data[5]
@@ -187,9 +200,34 @@ async def show_profile(callback: types.CallbackQuery):
         f"━━━━━━━━━━━━━━"
     )
     await callback.message.edit_text(text, reply_markup=get_main_kb(callback.from_user.id), parse_mode="HTML")
+    await callback.answer()
+
+# --- ТАБЛИЦА ЛИДЕРОВ (НОВОЕ) ---
+@dp.callback_query(lambda c: c.data == "top_coins")
+async def top_coins(callback: types.CallbackQuery, state: FSMContext):
+    await safe_reset_state(callback, state)
+    top = get_top_coins(10)
+    
+    if not top:
+        await callback.answer("Пока нет игроков.", show_alert=True)
+        return
+    
+    text = "🏆 <b>ТАБЛИЦА ЛИДЕРОВ ПО ЗВЁЗДАМ</b>\n\n"
+    medals = ["🥇", "🥈", "🥉"]
+    
+    for i, (un, fn, coins) in enumerate(top, 1):
+        medal = medals[i-1] if i <= 3 else f"<b>{i}.</b>"
+        name = f"@{un}" if un else (fn if fn else "Игрок")
+        text += f"{medal} {name} — <b>{coins} ⭐</b>\n"
+    
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="🔙 Назад", callback_data="profile"))
+    await callback.message.edit_text(text, reply_markup=b.as_markup(), parse_mode="HTML")
+    await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("ref_link_"))
-async def send_ref_link(callback: types.CallbackQuery):
+async def send_ref_link(callback: types.CallbackQuery, state: FSMContext):
+    await safe_reset_state(callback, state)
     uid = callback.from_user.id
     link = f"https://t.me/{BOT_USERNAME}?start=ref_{uid}"
     text = (
@@ -199,10 +237,14 @@ async def send_ref_link(callback: types.CallbackQuery):
         f"💰 За каждого друга ты получишь <b>+5 Звёзд</b>!\n"
         f"🎁 Друг тоже получит бонус."
     )
-    await callback.message.edit_text(text, reply_markup=get_main_kb(uid), parse_mode="HTML")
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="🔙 Назад", callback_data="profile"))
+    await callback.message.edit_text(text, reply_markup=b.as_markup(), parse_mode="HTML")
+    await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "daily_bonus")
-async def claim_bonus(callback: types.CallbackQuery):
+async def claim_bonus(callback: types.CallbackQuery, state: FSMContext):
+    await safe_reset_state(callback, state)
     user_data = get_or_create_user(callback.from_user.id)
     last_daily = user_data[3]
     current_time = time.time()
@@ -224,6 +266,7 @@ async def claim_bonus(callback: types.CallbackQuery):
         reply_markup=get_main_kb(callback.from_user.id), 
         parse_mode="HTML"
     )
+    await callback.answer()
 
 # --- КЕЙС С АНИМАЦИЕЙ ---
 CASE_ITEMS = [
@@ -235,7 +278,8 @@ CASE_ITEMS = [
 ]
 
 @dp.callback_query(lambda c: c.data == "open_case")
-async def open_case_start(callback: types.CallbackQuery):
+async def open_case_start(callback: types.CallbackQuery, state: FSMContext):
+    await safe_reset_state(callback, state)
     uid = callback.from_user.id
     user = get_or_create_user(uid)
     balance = user[1]
@@ -287,123 +331,208 @@ async def open_case_start(callback: types.CallbackQuery):
     b.row(InlineKeyboardButton(text="🔙 В меню", callback_data="profile"))
     
     await msg.edit_text(final_text, reply_markup=b.as_markup(), parse_mode="HTML")
+    await callback.answer()
 
-# --- ИГРА "ЛЬДИНЫ" ---
+# --- ИГРА "ЛЬДИНЫ" СО СТАВКАМИ ---
 ICE_DIFFICULTIES = {
-    "easy": {"name": "🟢 Легко", "reward_min": 2, "reward_max": 5, "success_rate": 0.8, "fail_penalty": 0},
-    "medium": {"name": "🟡 Средне", "reward_min": 5, "reward_max": 10, "success_rate": 0.6, "fail_penalty": 0},
-    "hard": {"name": "🔴 Сложно", "reward_min": 10, "reward_max": 20, "success_rate": 0.4, "fail_penalty": 0},
+    "easy": {"name": "🟢 Легко", "reward_mult": 0.5, "success_rate": 0.8},
+    "medium": {"name": "🟡 Средне", "reward_mult": 1.0, "success_rate": 0.6},
+    "hard": {"name": "🔴 Сложно", "reward_mult": 2.0, "success_rate": 0.4},
 }
 
 @dp.callback_query(lambda c: c.data == "ice_game_menu")
-async def ice_game_menu(callback: types.CallbackQuery):
+async def ice_game_menu(callback: types.CallbackQuery, state: FSMContext):
+    await safe_reset_state(callback, state)
+    user = get_or_create_user(callback.from_user.id)
+    balance = user[1]
+    
     text = (
         f"🧊 <b>ИГРА: ЛЬДИНЫ</b>\n\n"
-        f"Прыгай по льдинам и собирай награды!\n"
-        f"Чем сложнее уровень, тем больше приз.\n"
-        f"Но будь осторожен — можно упасть в воду!\n\n"
+        f"Прыгай по льдинам и умножай ставку!\n"
+        f"💰 Твой баланс: <b>{balance} ⭐</b>\n\n"
+        f"<b>Сложности:</b>\n"
+        f"🟢 Легко — x0.5 за прыжок, 80% успеха\n"
+        f"🟡 Средне — x1.0 за прыжок, 60% успеха\n"
+        f"🔴 Сложно — x2.0 за прыжок, 40% успеха\n\n"
         f"Выбери сложность:"
     )
     b = InlineKeyboardBuilder()
-    b.row(InlineKeyboardButton(text="🟢 Легко (2-5⭐)", callback_data="ice_start_easy"))
-    b.row(InlineKeyboardButton(text="🟡 Средне (5-10⭐)", callback_data="ice_start_medium"))
-    b.row(InlineKeyboardButton(text="🔴 Сложно (10-20⭐)", callback_data="ice_start_hard"))
+    b.row(InlineKeyboardButton(text="🟢 Легко", callback_data="ice_diff_easy"))
+    b.row(InlineKeyboardButton(text="🟡 Средне", callback_data="ice_diff_medium"))
+    b.row(InlineKeyboardButton(text="🔴 Сложно", callback_data="ice_diff_hard"))
     b.row(InlineKeyboardButton(text="🔙 Назад", callback_data="profile"))
     await callback.message.edit_text(text, reply_markup=b.as_markup(), parse_mode="HTML")
+    await callback.answer()
 
-@dp.callback_query(lambda c: c.data.startswith("ice_start_"))
-async def ice_start(callback: types.CallbackQuery, state: FSMContext):
-    diff = callback.data.replace("ice_start_", "")
+@dp.callback_query(lambda c: c.data.startswith("ice_diff_"))
+async def ice_choose_diff(callback: types.CallbackQuery, state: FSMContext):
+    diff = callback.data.replace("ice_diff_", "")
     if diff not in ICE_DIFFICULTIES:
         return await callback.answer("❌ Неверная сложность", show_alert=True)
     
-    await state.update_data(difficulty=diff, current_reward=0, jumps=0)
+    await state.update_data(difficulty=diff)
+    
+    user = get_or_create_user(callback.from_user.id)
+    balance = user[1]
+    max_bet = min(5, balance)
+    
+    if max_bet < 1:
+        await state.clear()
+        await callback.answer("❌ Нужно минимум 1⭐ для игры", show_alert=True)
+        return await callback.message.edit_text(
+            "❌ <b>Недостаточно звёзд!</b>\nНужно минимум 1⭐ для игры.",
+            reply_markup=get_main_kb(callback.from_user.id),
+            parse_mode="HTML"
+        )
+    
+    text = (
+        f"💰 <b>ВЫБЕРИ СТАВКУ</b>\n\n"
+        f"Сложность: {ICE_DIFFICULTIES[diff]['name']}\n"
+        f"Баланс: {balance} ⭐\n\n"
+        f"Выбери ставку (от 1 до {max_bet}):"
+    )
+    b = InlineKeyboardBuilder()
+    for bet in range(1, max_bet + 1):
+        b.row(InlineKeyboardButton(text=f"{bet} ⭐", callback_data=f"ice_bet_{bet}"))
+    b.row(InlineKeyboardButton(text="🔙 Назад", callback_data="ice_game_menu"))
+    await callback.message.edit_text(text, reply_markup=b.as_markup(), parse_mode="HTML")
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data.startswith("ice_bet_"))
+async def ice_choose_bet(callback: types.CallbackQuery, state: FSMContext):
+    bet = int(callback.data.replace("ice_bet_", ""))
+    user = get_or_create_user(callback.from_user.id)
+    balance = user[1]
+    
+    if bet < 1 or bet > 5 or bet > balance:
+        return await callback.answer("❌ Неверная ставка", show_alert=True)
+    
+    data = await state.get_data()
+    diff = data['difficulty']
+    
+    # Списываем ставку
+    update_coins(callback.from_user.id, -bet)
+    
+    await state.update_data(bet=bet, current_reward=0, jumps=0)
     await state.set_state(St.playing_ice)
     
     diff_data = ICE_DIFFICULTIES[diff]
     text = (
         f"🧊 <b>НАЧАЛО ИГРЫ</b>\n\n"
         f"Сложность: {diff_data['name']}\n"
-        f"Шанс успеха: {int(diff_data['success_rate'] * 100)}%\n\n"
+        f"💰 Ставка: <b>{bet} ⭐</b>\n"
+        f"🎯 Шанс успеха: <b>{int(diff_data['success_rate'] * 100)}%</b>\n\n"
         f"Ты стоишь на первой льдине.\n"
         f"Нажми «Прыгнуть», чтобы продолжить!"
     )
     b = InlineKeyboardBuilder()
     b.row(InlineKeyboardButton(text="🦘 Прыгнуть", callback_data="ice_jump"))
     b.row(InlineKeyboardButton(text="🏁 Забрать приз", callback_data="ice_take"))
-    b.row(InlineKeyboardButton(text="🏳️ Выйти", callback_data="ice_quit"))
+    b.row(InlineKeyboardButton(text="🏳️ Сдаться (потерять ставку)", callback_data="ice_quit"))
     await callback.message.edit_text(text, reply_markup=b.as_markup(), parse_mode="HTML")
+    await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "ice_jump", St.playing_ice)
 async def ice_jump(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     diff = data['difficulty']
+    bet = data['bet']
     diff_data = ICE_DIFFICULTIES[diff]
     current_reward = data['current_reward']
     jumps = data['jumps']
     
-    # Проверка успеха
     if random.random() < diff_data['success_rate']:
-        # Успех! Добавляем награду
-        reward = random.randint(diff_data['reward_min'], diff_data['reward_max'])
-        current_reward += reward
+        # Успех! Награда = ставка * множитель сложности
+        reward_this_jump = max(1, int(bet * diff_data['reward_mult']))
+        current_reward += reward_this_jump
         jumps += 1
         
         await state.update_data(current_reward=current_reward, jumps=jumps)
         
         text = (
             f"✅ <b>УСПЕХ!</b>\n\n"
-            f"Ты успешно прыгнул на следующую льдину!\n"
-            f"🎁 Текущий приз: <b>+{current_reward} ⭐</b>\n"
+            f"Ты прыгнул на следующую льдину!\n"
+            f"💎 +{reward_this_jump} ⭐ к призу\n"
+            f"🎁 Текущий приз: <b>{current_reward} ⭐</b>\n"
             f"🦘 Прыжков: {jumps}\n\n"
-            f"Продолжить или забрать приз?"
+            f"Продолжить или забрать?"
         )
         b = InlineKeyboardBuilder()
         b.row(InlineKeyboardButton(text="🦘 Прыгнуть", callback_data="ice_jump"))
         b.row(InlineKeyboardButton(text="🏁 Забрать приз", callback_data="ice_take"))
-        b.row(InlineKeyboardButton(text="🏳️ Выйти", callback_data="ice_quit"))
+        b.row(InlineKeyboardButton(text="🏳️ Сдаться", callback_data="ice_quit"))
         await callback.message.edit_text(text, reply_markup=b.as_markup(), parse_mode="HTML")
+        await callback.answer()
     else:
-        # Провал!
+        # Провал! Ставка потеряна
         await state.clear()
         text = (
             f"💦 <b>ПРОВАЛ!</b>\n\n"
             f"Ты упал в воду...\n"
-            f"Приз потерян: {current_reward} ⭐\n\n"
-            f"Попробуй еще раз!"
+            f"💸 Ставка <b>{bet} ⭐</b> потеряна.\n\n"
+            f"Попробуй ещё раз!"
         )
         b = InlineKeyboardBuilder()
-        b.row(InlineKeyboardButton(text="🔙 В меню", callback_data="ice_game_menu"))
+        b.row(InlineKeyboardButton(text="🔄 Играть снова", callback_data="ice_game_menu"))
         b.row(InlineKeyboardButton(text="👤 Профиль", callback_data="profile"))
         await callback.message.edit_text(text, reply_markup=b.as_markup(), parse_mode="HTML")
+        await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "ice_take", St.playing_ice)
 async def ice_take(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     reward = data['current_reward']
     jumps = data['jumps']
+    bet = data['bet']
+    
+    await state.clear()
     
     if reward > 0:
         update_coins(callback.from_user.id, reward)
+        profit = reward - bet
+        profit_str = f"+{profit}" if profit >= 0 else str(profit)
         text = (
             f"🏆 <b>ПОБЕДА!</b>\n\n"
-            f"Ты успешно завершил игру!\n"
-            f"🎁 Приз: <b>+{reward} ⭐</b>\n"
+            f"🎁 Выигрыш: <b>{reward} ⭐</b>\n"
+            f"💰 Ставка была: {bet} ⭐\n"
+            f"📈 Итого: <b>{profit_str} ⭐</b>\n"
             f"🦘 Прыжков: {jumps}"
         )
     else:
-        text = "😔 Ты не успел собрать награду."
+        text = (
+            f"😔 Ты забрал 0⭐\n"
+            f"💸 Ставка {bet} ⭐ потеряна."
+        )
     
-    await state.clear()
     b = InlineKeyboardBuilder()
     b.row(InlineKeyboardButton(text="🔄 Играть снова", callback_data="ice_game_menu"))
     b.row(InlineKeyboardButton(text="👤 Профиль", callback_data="profile"))
     await callback.message.edit_text(text, reply_markup=b.as_markup(), parse_mode="HTML")
+    await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "ice_quit", St.playing_ice)
 async def ice_quit(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    bet = data.get('bet', 0)
     await state.clear()
-    await callback.message.edit_text("🏳️ Ты вышел из игры.", reply_markup=get_main_kb(callback.from_user.id))
+    
+    text = (
+        f"🏳️ <b>ТЫ СДАЛСЯ</b>\n\n"
+        f"💸 Ставка <b>{bet} ⭐</b> потеряна.\n\n"
+        f"В следующий раз будь смелее!"
+    )
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="🔄 Играть снова", callback_data="ice_game_menu"))
+    b.row(InlineKeyboardButton(text="👤 Профиль", callback_data="profile"))
+    await callback.message.edit_text(text, reply_markup=b.as_markup(), parse_mode="HTML")
+    await callback.answer()
+
+# --- БЕЗОПАСНЫЙ ВЫХОД ИЗ FSM (если юзер жмёт не игровую кнопку во время игры) ---
+@dp.callback_query(lambda c: c.data in ["profile", "ice_game_menu", "daily_bonus", "open_case", "top_coins"] or c.data.startswith("ref_link_"))
+async def reset_state_on_menu_click(callback: types.CallbackQuery, state: FSMContext):
+    """Этот хендлер уже не нужен отдельно, так как safe_reset_state вызывается внутри каждого менюшного хендлера.
+    Но оставим как страховку на случай, если FSM застрянет."""
+    pass
 
 # --- РАССЫЛКА ДЛЯ АДМИНА ---
 @dp.message(Command("send"), lambda msg: msg.from_user.id == ADMIN_ID)
