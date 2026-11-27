@@ -7,9 +7,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 # --- КОНФИГУРАЦИЯ ---
-BOT_TOKEN = "9022493828:AAEGVlX0QZRhuZwDm6HcihFLG3Q5lDWalDo"
+BOT_TOKEN = "9088817673:AAFuY0xHFEP_jr3w7hmSSq1kcctV2cwdJcI"
 ADMIN_ID = 8907438590
-BOT_USERNAME = "Darkgram20sk_bot" # ЗАМЕНИ НА ЮЗЕРНЕЙМ ТВОЕГО БОТА
+BOT_USERNAME = "Darkgram000_bot"  # <--- ЗАМЕНИ НА ЮЗЕРНЕЙМ ТВОЕГО БОТА
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
@@ -50,7 +50,8 @@ def get_or_create_user(uid, un=None, fn=None):
     c.execute("SELECT user_id, coins, tokens, last_daily, referrer_id, level, xp FROM users WHERE user_id = ?", (uid,))
     res = c.fetchone()
     if not res:
-        c.execute("INSERT INTO users (user_id, username, first_name) VALUES (?, ?, ?)", (uid, un, fn))
+        # Создаем нового пользователя. last_daily = 0 означает, что бонус доступен сразу.
+        c.execute("INSERT INTO users (user_id, username, first_name, last_daily) VALUES (?, ?, ?, ?)", (uid, un, fn, 0))
         conn.commit()
         res = (uid, 0, 0, 0, 0, 1, 0)
     elif un or fn:
@@ -119,6 +120,15 @@ def get_top_coins(limit=10):
     conn.close()
     return top
 
+# --- КОНСТАНТЫ ИГРЫ (НОВЫЕ УРОВНИ) ---
+ICE_DIFFICULTIES = {
+    "easy":     {"name": "🟢 Легко",    "reward_mult": 0.5, "success_rate": 0.8},
+    "medium":   {"name": "🟡 Средне",   "reward_mult": 1.0, "success_rate": 0.6},
+    "hard":     {"name": "🔴 Сложно",   "reward_mult": 2.0, "success_rate": 0.4},
+    "extreme":  {"name": "💀 Экстрим",  "reward_mult": 3.0, "success_rate": 0.25},
+    "madness":  {"name": "🤯 Безумие",  "reward_mult": 5.0, "success_rate": 0.1}
+}
+
 # --- КОМАНДЫ ---
 
 @dp.message(Command("start"))
@@ -127,12 +137,16 @@ async def cmd_start(message: types.Message, state: FSMContext):
     init_db()
     args = message.text.split()
     referrer_id = None
+    
+    # Обработка реферальной ссылки
     if len(args) > 1 and args[1].startswith("ref_"):
         try:
             referrer_id = int(args[1].replace("ref_", ""))
         except:
             pass
 
+    # Создаем или получаем пользователя
+    # Важно: last_daily по умолчанию 0, значит бонус доступен сразу
     get_or_create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     
     if referrer_id and referrer_id != message.from_user.id:
@@ -153,9 +167,9 @@ async def cmd_start(message: types.Message, state: FSMContext):
         f"👋 <b>Привет, {message.from_user.first_name}!</b>\n\n"
         f"<b>Команды бота:</b>\n"
         f"/profile - Твой профиль\n"
-        f"/bonus - Ежедневный бонус\n"
+        f"/bonus - Ежедневный бонус (раз в 12ч)\n"
         f"/case - Открыть кейс (5⭐)\n"
-        f"/ice - Игра Льдины\n"
+        f"/ice - Меню игры Льдины\n"
         f"/top - Таблица лидеров\n"
         f"/ref - Твоя реферальная ссылка"
     )
@@ -191,11 +205,15 @@ async def cmd_profile(message: types.Message, state: FSMContext):
 async def cmd_bonus(message: types.Message, state: FSMContext):
     await state.clear()
     user_data = get_or_create_user(message.from_user.id)
+    
+    # Индекс 3 - это last_daily
     last_daily = user_data[3]
     current_time = time.time()
-    cooldown = 12 * 60 * 60 
+    cooldown = 12 * 60 * 60  # 12 часов
     
+    # Если last_daily равно 0 (новый юзер), то time_passed будет огромным, условие пройдет
     time_passed = current_time - last_daily
+    
     if time_passed < cooldown:
         time_left = int(cooldown - time_passed)
         hours = time_left // 3600
@@ -270,7 +288,7 @@ async def cmd_case(message: types.Message, state: FSMContext):
     await message.answer(final_text, parse_mode="HTML")
 
 @dp.message(Command("ice"))
-async def cmd_ice(message: types.Message, state: FSMContext):
+async def cmd_ice_menu(message: types.Message, state: FSMContext):
     await state.clear()
     user = get_or_create_user(message.from_user.id)
     balance = user[1]
@@ -278,12 +296,15 @@ async def cmd_ice(message: types.Message, state: FSMContext):
     text = (
         f"🧊 <b>ИГРА: ЛЬДИНЫ</b>\n\n"
         f"💰 Твой баланс: <b>{balance} ⭐</b>\n\n"
+        f"<b>Уровни сложности:</b>\n"
+        f"/ice easy - 🟢 Легко (x0.5, 80% успеха)\n"
+        f"/ice medium - 🟡 Средне (x1.0, 60% успеха)\n"
+        f"/ice hard - 🔴 Сложно (x2.0, 40% успеха)\n"
+        f"/ice extreme - 💀 Экстрим (x3.0, 25% успеха)\n"
+        f"/ice madness - 🤯 Безумие (x5.0, 10% успеха)\n\n"
         f"<b>Как играть:</b>\n"
-        f"/ice easy - Легко (x0.5, 80% успеха)\n"
-        f"/ice medium - Средне (x1.0, 60% успеха)\n"
-        f"/ice hard - Сложно (x2.0, 40% успеха)\n\n"
-        f"<b>Пример:</b> /ice hard 3\n"
-        f"Это значит: сложная игра со ставкой 3⭐"
+        f"/ice [сложность] [ставка]\n"
+        f"Пример: /ice extreme 5"
     )
     await message.answer(text, parse_mode="HTML")
 
@@ -293,18 +314,18 @@ async def cmd_ice_start(message: types.Message, state: FSMContext):
     args = message.text.split()
     
     if len(args) < 2:
-        return await message.answer("❌ Укажи сложность: /ice easy|medium|hard [ставка]")
+        return await cmd_ice_menu(message, state)
     
     diff = args[1].lower()
-    if diff not in ["easy", "medium", "hard"]:
-        return await message.answer("❌ Неверная сложность. Используй: easy, medium или hard")
+    if diff not in ICE_DIFFICULTIES:
+        return await message.answer(f"❌ Неверная сложность. Доступны: {', '.join(ICE_DIFFICULTIES.keys())}")
     
     bet = 1
     if len(args) > 2:
         try:
             bet = int(args[2])
-            if bet < 1 or bet > 5:
-                return await message.answer("❌ Ставка должна быть от 1 до 5")
+            if bet < 1 or bet > 10: # Увеличил макс ставку до 10
+                return await message.answer("❌ Ставка должна быть от 1 до 10")
         except:
             return await message.answer("❌ Неверная ставка")
     
@@ -313,12 +334,6 @@ async def cmd_ice_start(message: types.Message, state: FSMContext):
     
     if balance < bet:
         return await message.answer(f"❌ Недостаточно звёзд! Нужно {bet} ⭐")
-    
-    ICE_DIFFICULTIES = {
-        "easy": {"name": "🟢 Легко", "reward_mult": 0.5, "success_rate": 0.8},
-        "medium": {"name": "🟡 Средне", "reward_mult": 1.0, "success_rate": 0.6},
-        "hard": {"name": "🔴 Сложно", "reward_mult": 2.0, "success_rate": 0.4},
-    }
     
     update_coins(message.from_user.id, -bet)
     
@@ -349,12 +364,6 @@ async def cmd_jump(message: types.Message, state: FSMContext):
     bet = data['bet']
     current_reward = data['current_reward']
     jumps = data['jumps']
-    
-    ICE_DIFFICULTIES = {
-        "easy": {"name": "🟢 Легко", "reward_mult": 0.5, "success_rate": 0.8},
-        "medium": {"name": "🟡 Средне", "reward_mult": 1.0, "success_rate": 0.6},
-        "hard": {"name": "🔴 Сложно", "reward_mult": 2.0, "success_rate": 0.4},
-    }
     
     diff_data = ICE_DIFFICULTIES[diff]
     
